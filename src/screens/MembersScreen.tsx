@@ -344,7 +344,6 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
 };
 
 const s = StyleSheet.create({
-  content: {padding: 16, paddingBottom: 32},
   headerRow: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14},
   heading: {fontFamily: Fonts.display, fontSize: 26, fontWeight: '600', fontStyle: 'italic'},
   addBtn: {paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1},

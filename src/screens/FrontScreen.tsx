@@ -17,16 +17,9 @@ import {
   Member,
   fmtTime,
   fmtDur,
+  getInitials,
   isFrontEmpty,
 } from '../utils';
-
-const getInitials = (name: string) =>
-  name
-    .split(' ')
-    .map(w => w[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase();
 
 const Avatar = ({
   member,
@@ -83,7 +76,6 @@ interface Props {
   front: FrontState | null;
   getMember: (id: string) => Member | undefined;
   onSetFront: () => void;
-  onUpdateNote: (tier: FrontTierKey, note: string) => void;
   onEditDetails: (tier: FrontTierKey) => void;
 }
 
@@ -100,8 +92,6 @@ const TierCard = ({
   getMember,
   front,
   onEditDetails,
-  onUpdateNote,
-  showLocation,
 }: {
   tier: FrontTier;
   tierKey: FrontTierKey;
@@ -109,8 +99,6 @@ const TierCard = ({
   getMember: (id: string) => Member | undefined;
   front: FrontState;
   onEditDetails: (tier: FrontTierKey) => void;
-  onUpdateNote: (tier: FrontTierKey, note: string) => void;
-  showLocation: boolean;
 }) => {
   const {t} = useTranslation();
 
@@ -220,7 +208,6 @@ export const FrontScreen = ({
   front,
   getMember,
   onSetFront,
-  onUpdateNote,
   onEditDetails,
 }: Props) => {
   const {t} = useTranslation();
@@ -269,8 +256,6 @@ export const FrontScreen = ({
               getMember={getMember}
               front={front!}
               onEditDetails={onEditDetails}
-              onUpdateNote={onUpdateNote}
-              showLocation={true}
             />
 
             <TierCard
@@ -280,8 +265,6 @@ export const FrontScreen = ({
               getMember={getMember}
               front={front!}
               onEditDetails={onEditDetails}
-              onUpdateNote={onUpdateNote}
-              showLocation={false}
             />
 
             <TierCard
@@ -291,8 +274,6 @@ export const FrontScreen = ({
               getMember={getMember}
               front={front!}
               onEditDetails={onEditDetails}
-              onUpdateNote={onUpdateNote}
-              showLocation={false}
             />
           </>
         )}

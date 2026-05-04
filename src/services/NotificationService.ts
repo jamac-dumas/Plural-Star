@@ -155,6 +155,8 @@ export const clearFrontNotification = async () => {
       return;
     }
     await notifee.cancelNotification(NOTIF_ID);
+    // Defensive: stop any legacy foreground service that prior versions may have started.
+    try { await notifee.stopForegroundService(); } catch {}
   } catch (e) {
     console.error('[PluralSpace] Clear notification error:', e);
   }

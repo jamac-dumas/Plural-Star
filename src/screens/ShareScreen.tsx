@@ -512,29 +512,58 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           const desc = isPK ? (extPreview.system.description || system.description) : (extPreview.system.content?.desc || extPreview.system.content?.description || extPreview.system.description || system.description);
           await store.set(KEYS.system, {...system, name: name || system.name, description: desc});
         }
+        // Bug #1: idMap routes external IDs (SP _id / PK uuid + numeric id) → local Member.id.
+        const idMap: Record<string, string> = {};
         if (extSel.members && extPreview.members.length > 0) {
-          const newM: Member[] = extPreview.members.map((m: any) => {
-            const id = uid();
-            return {
-              id,
-              name: isPK ? m.display_name || m.name : (m.content?.name || m.name || 'Unknown'),
+          const merged: Member[] = [...members];
+          extPreview.members.forEach((m: any) => {
+            const extId: string = isPK ? (m.uuid || m.id) : m._id || m.id;
+            const incoming: Partial<Member> = {
+              name: isPK ? (m.display_name || m.name || 'Unknown') : (m.content?.name || m.name || 'Unknown'),
               pronouns: isPK ? (m.pronouns || '') : (m.content?.pronouns || ''),
               role: isPK ? '' : (m.content?.role || ''),
               color: isPK ? (m.color ? `#${m.color}` : '#DAA520') : (m.content?.color || '#DAA520'),
               description: isPK ? (m.description || '') : (m.content?.desc || ''),
-              // SP exposes archived as a boolean on content; PK has no equivalent field.
               archived: !isPK && !!m.content?.archived ? true : undefined,
             };
+            if (extId) {
+              const idx = merged.findIndex(em => em.sourceId === extId);
+              if (idx >= 0) {
+                merged[idx] = {...merged[idx], ...incoming, sourceId: extId};
+                idMap[extId] = merged[idx].id;
+                if (isPK && m.id && m.id !== extId) idMap[m.id] = merged[idx].id;
+                return;
+              }
+              const lowerName = String(incoming.name).toLowerCase();
+              const idx2 = merged.findIndex(em => !em.sourceId && em.name.toLowerCase() === lowerName);
+              if (idx2 >= 0) {
+                merged[idx2] = {...merged[idx2], ...incoming, sourceId: extId};
+                idMap[extId] = merged[idx2].id;
+                if (isPK && m.id && m.id !== extId) idMap[m.id] = merged[idx2].id;
+                return;
+              }
+            }
+            const newId = uid();
+            merged.push({
+              id: newId,
+              name: incoming.name as string,
+              pronouns: incoming.pronouns as string,
+              role: incoming.role as string,
+              color: incoming.color as string,
+              description: incoming.description as string,
+              archived: incoming.archived,
+              sourceId: extId,
+            });
+            if (extId) idMap[extId] = newId;
+            if (isPK && m.id && m.id !== extId) idMap[m.id] = newId;
           });
-          const merged = [...members, ...newM.filter(nm => !members.find(em => em.name.toLowerCase() === nm.name.toLowerCase()))];
           await store.set(KEYS.members, merged);
-          // Build avatarUrls AFTER dedup, keyed by the final ID that ended up in merged.
-          // Doing it before dedup causes avatar lookups to fail for members whose names
-          // already existed locally — their new uid() gets discarded but stays in avatarUrls,
-          // so findIndex never matches and the avatar is silently dropped.
           const avatarUrls: Record<string, string> = {};
           if (extSel.avatars) {
             extPreview.members.forEach((m: any) => {
+              const extId: string = isPK ? (m.uuid || m.id) : m._id || m.id;
+              const localId = extId ? idMap[extId] : undefined;
+              if (!localId) return;
               let avatarUrl = '';
               if (isPK) {
                 avatarUrl = m.avatar_url || '';
@@ -542,18 +571,15 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                 if (m.content?.avatarUrl) {
                   avatarUrl = m.content.avatarUrl;
                 } else if (m.content?.avatarUuid) {
-                  const uid = m.content?.uid || m.uid;
-                  avatarUrl = uid
-                    ? `https://spaces.apparyllis.com/avatars/${uid}/${m.content.avatarUuid}`
+                  const ownerUid = m.content?.uid || m.uid;
+                  avatarUrl = ownerUid
+                    ? `https://spaces.apparyllis.com/avatars/${ownerUid}/${m.content.avatarUuid}`
                     : `https://spaces.apparyllis.com/avatars/${m.content.avatarUuid}`;
                 } else if (m.avatarUrl) {
                   avatarUrl = m.avatarUrl;
                 }
               }
-              if (!avatarUrl) return;
-              const name = isPK ? (m.display_name || m.name || '') : (m.content?.name || m.name || '');
-              const match = merged.find(lm => lm.name.toLowerCase() === name.toLowerCase());
-              if (match) avatarUrls[match.id] = avatarUrl;
+              if (avatarUrl) avatarUrls[localId] = avatarUrl;
             });
           }
           const avatarEntries = Object.entries(avatarUrls);
@@ -568,16 +594,14 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             }
             await store.set(KEYS.members, withAvatars);
           }
-          // PK exposes per-member banner URLs. SP has no member banner concept.
-          // Download each one to disk via saveBannerFromUrl just like avatars.
           if (isPK && extSel.banners) {
             const bannerUrls: Record<string, string> = {};
             extPreview.members.forEach((m: any) => {
               const url = m.banner || '';
               if (!url || !url.startsWith('http')) return;
-              const name = m.display_name || m.name || '';
-              const match = merged.find(lm => lm.name.toLowerCase() === name.toLowerCase());
-              if (match) bannerUrls[match.id] = url;
+              const extId: string = m.uuid || m.id;
+              const localId = extId ? idMap[extId] : undefined;
+              if (localId) bannerUrls[localId] = url;
             });
             const bannerEntries = Object.entries(bannerUrls);
             if (bannerEntries.length > 0) {
@@ -594,8 +618,6 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               if (changed) await store.set(KEYS.members, withBanners);
             }
           }
-          const idMap: Record<string, string> = {};
-          extPreview.members.forEach((m: any, i: number) => { const eid = isPK ? (m.uuid || m.id) : m.id; const lm = merged.find(l => l.name.toLowerCase() === newM[i]?.name.toLowerCase()); if (eid && lm) idMap[eid] = lm.id; if (isPK && m.id && lm) idMap[m.id] = lm.id; });
           if (!isPK && extSel.customFields && extPreview.customFields && extPreview.customFields.length > 0) {
             const SP_TYPE_MAP: Record<string, CustomFieldType> = {'0': 'text', '1': 'number', '2': 'toggle', '3': 'date', '4': 'monthYear', '5': 'month', '6': 'year', 'text': 'text', 'number': 'number', 'checkbox': 'toggle', 'toggle': 'toggle', 'date': 'date', 'markdown': 'markdown'};
             const normId = (raw: any): string => {
@@ -640,14 +662,10 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             let diagLogged = 0;
             let wroteCount = 0;
             const updatedMembers = currentMembers.map(lm => {
-              let spMember = extPreview.members.find((sm: any) => idMap[normId(sm.id)] === lm.id);
-              if (!spMember) {
-                const lmNameNorm = (lm.name || '').trim().toLowerCase();
-                spMember = extPreview.members.find((sm: any) => {
-                  const n = (sm.content?.name || sm.name || '').trim().toLowerCase();
-                  return n && n === lmNameNorm;
-                });
-              }
+              const spMember = extPreview.members.find((sm: any) => {
+                const eid = isPK ? (sm.uuid || sm.id) : (sm._id || sm.id);
+                return eid && idMap[normId(eid)] === lm.id;
+              });
               if (!spMember) return lm;
               const info = spMember.content?.info || spMember.info;
               if (!info || typeof info !== 'object') return lm;
@@ -741,7 +759,22 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           }
         } else if (extSel.frontHistory && extPreview.switches.length > 0) {
           const existingIdMap: Record<string, string> = {};
-          extPreview.members.forEach((m: any) => { const eid = isPK ? (m.uuid || m.id) : m.id; const name = isPK ? (m.display_name || m.name || '') : (m.content?.name || m.name || ''); const lm = members.find(l => l.name.toLowerCase() === name.toLowerCase()); if (eid && lm) existingIdMap[eid] = lm.id; if (isPK && m.id && lm) existingIdMap[m.id] = lm.id; });
+          extPreview.members.forEach((m: any) => {
+            const eid: string = isPK ? (m.uuid || m.id) : (m._id || m.id);
+            if (!eid) return;
+            const bySource = members.find(l => l.sourceId === eid);
+            if (bySource) {
+              existingIdMap[eid] = bySource.id;
+              if (isPK && m.id && m.id !== eid) existingIdMap[m.id] = bySource.id;
+              return;
+            }
+            const name = isPK ? (m.display_name || m.name || '') : (m.content?.name || m.name || '');
+            const lm = members.find(l => l.name.toLowerCase() === String(name).toLowerCase());
+            if (lm) {
+              existingIdMap[eid] = lm.id;
+              if (isPK && m.id && m.id !== eid) existingIdMap[m.id] = lm.id;
+            }
+          });
           const newH = isPK ? convertPKSwitches(extPreview.switches, existingIdMap) : convertSPSwitches(extPreview.switches, existingIdMap);
           if (newH.length > 0) {
             const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
@@ -794,34 +827,62 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           const desc = sysData.desc || sysData.description || system.description;
           await store.set(KEYS.system, {...system, name: name || system.name, description: desc});
         }
+        // Bug #1: idMap routes SP _id → local Member.id, never via name lookup.
+        const idMap: Record<string, string> = {};
         if (extSel.members && spMembers.length > 0) {
-          const newM: Member[] = spMembers.map((m: any) => {
-            const id = uid();
-            return {
-              id,
+          const merged: Member[] = [...members];
+          spMembers.forEach((m: any) => {
+            const spId: string | undefined = m._id;
+            const incoming: Partial<Member> = {
               name: m.name || 'Unknown',
               pronouns: m.pronouns || '',
               role: '',
               color: m.color || '#DAA520',
               description: m.desc || '',
-              archived: m.archived || false,
+              archived: !!m.archived,
             };
+            if (spId) {
+              const idx = merged.findIndex(em => em.sourceId === spId);
+              if (idx >= 0) {
+                merged[idx] = {...merged[idx], ...incoming, sourceId: spId};
+                idMap[spId] = merged[idx].id;
+                return;
+              }
+              const lowerName = String(incoming.name).toLowerCase();
+              const idx2 = merged.findIndex(em => !em.sourceId && em.name.toLowerCase() === lowerName);
+              if (idx2 >= 0) {
+                merged[idx2] = {...merged[idx2], ...incoming, sourceId: spId};
+                idMap[spId] = merged[idx2].id;
+                return;
+              }
+            }
+            const newId = uid();
+            merged.push({
+              id: newId,
+              name: incoming.name as string,
+              pronouns: incoming.pronouns as string,
+              role: incoming.role as string,
+              color: incoming.color as string,
+              description: incoming.description as string,
+              archived: incoming.archived,
+              sourceId: spId,
+            });
+            if (spId) idMap[spId] = newId;
           });
-          const merged = [...members, ...newM.filter(nm => !members.find(em => em.name.toLowerCase() === nm.name.toLowerCase()))];
           await store.set(KEYS.members, merged);
           const avatarUrls: Record<string, string> = {};
           if (extSel.avatars) {
-            spMembers.forEach((m: any, i: number) => {
+            spMembers.forEach((m: any) => {
+              const localId = m._id ? idMap[m._id] : undefined;
+              if (!localId) return;
               let avatarUrl = m.avatarUrl || '';
               if (!avatarUrl && m.avatarUuid) {
-                const uid = m.uid;
-                avatarUrl = uid
-                  ? `https://spaces.apparyllis.com/avatars/${uid}/${m.avatarUuid}`
+                const ownerUid = m.uid;
+                avatarUrl = ownerUid
+                  ? `https://spaces.apparyllis.com/avatars/${ownerUid}/${m.avatarUuid}`
                   : `https://spaces.apparyllis.com/avatars/${m.avatarUuid}`;
               }
-              if (!avatarUrl) return;
-              const match = merged.find(lm => lm.name.toLowerCase() === (newM[i]?.name || '').toLowerCase());
-              if (match) avatarUrls[match.id] = avatarUrl;
+              if (avatarUrl) avatarUrls[localId] = avatarUrl;
             });
           }
           const avatarEntries = Object.entries(avatarUrls);
@@ -836,12 +897,67 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             }
             await store.set(KEYS.members, withAvatars);
           }
-          // Build idMap once — both frontHistory AND groups depend on the SP _id → local id mapping.
-          const idMap: Record<string, string> = {};
-          spMembers.forEach((m: any, i: number) => {
-            const lm = merged.find(l => l.name.toLowerCase() === newM[i]?.name.toLowerCase());
-            if (m._id && lm) idMap[m._id] = lm.id;
-          });
+          // Bug #2: customFields block — was missing on file-import path.
+          if (extSel.customFields && extPreview.customFields && extPreview.customFields.length > 0) {
+            const SP_TYPE_MAP: Record<string, CustomFieldType> = {'0': 'text', '1': 'number', '2': 'toggle', '3': 'date', '4': 'monthYear', '5': 'month', '6': 'year', 'text': 'text', 'number': 'number', 'checkbox': 'toggle', 'toggle': 'toggle', 'date': 'date', 'markdown': 'markdown'};
+            const normId = (raw: any): string => {
+              if (raw == null) return '';
+              if (typeof raw === 'string') return raw;
+              if (typeof raw === 'number') return String(raw);
+              if (typeof raw === 'object') {
+                if (typeof raw.$oid === 'string') return raw.$oid;
+                if (typeof raw._id === 'string') return raw._id;
+                if (typeof raw.id === 'string') return raw.id;
+              }
+              return '';
+            };
+            const existingDefs = await store.get<CustomFieldDef[]>(KEYS.customFieldDefs, []) || [];
+            const fieldIdMap: Record<string, string> = {};
+            const newDefs: CustomFieldDef[] = [];
+            extPreview.customFields.forEach((cf: any, i: number) => {
+              const candidates = [cf.id, cf.uuid, cf._id];
+              const spIds = candidates.map(normId).filter(Boolean);
+              const spName = cf.name || `Field ${i + 1}`;
+              const spType = cf.type;
+              const existing = existingDefs.find(d => d.name.toLowerCase() === String(spName).toLowerCase());
+              let localId: string;
+              if (existing) {
+                localId = existing.id;
+              } else {
+                localId = uid();
+                newDefs.push({id: localId, name: String(spName), type: SP_TYPE_MAP[String(spType)] || 'text', sortOrder: cf.order ?? i});
+              }
+              spIds.forEach(k => { fieldIdMap[k] = localId; });
+            });
+            if (newDefs.length > 0) {
+              await store.set(KEYS.customFieldDefs, [...existingDefs, ...newDefs]);
+            }
+            const currentMembers = await store.get<Member[]>(KEYS.members, []) || [];
+            const updatedMembers = currentMembers.map(lm => {
+              const spMember = spMembers.find((sm: any) => sm._id && idMap[sm._id] === lm.id);
+              if (!spMember) return lm;
+              const info = spMember.info;
+              if (!info || typeof info !== 'object') return lm;
+              const existingCF: CustomFieldValue[] = lm.customFields || [];
+              const newCF: CustomFieldValue[] = [...existingCF];
+              Object.entries(info).forEach(([spFieldId, rawValue]) => {
+                const localFieldId = fieldIdMap[normId(spFieldId)] || fieldIdMap[spFieldId];
+                if (!localFieldId) return;
+                let value: any = rawValue;
+                if (value && typeof value === 'object' && !Array.isArray(value)) {
+                  if ('value' in value) value = (value as any).value;
+                }
+                if (value == null) return;
+                const valStr = typeof value === 'object' ? JSON.stringify(value) : String(value);
+                if (valStr === '') return;
+                const existingIdx = newCF.findIndex(cv => cv.fieldId === localFieldId);
+                if (existingIdx >= 0) newCF[existingIdx] = {fieldId: localFieldId, value: valStr as any};
+                else newCF.push({fieldId: localFieldId, value: valStr as any});
+              });
+              return {...lm, customFields: newCF};
+            });
+            await store.set(KEYS.members, updatedMembers);
+          }
           if (extSel.frontHistory && spHistory.length > 0) {
             const newH = convertSPSwitches(spHistory.map((sh: any) => ({content: sh, ...sh})), idMap);
             if (newH.length > 0) {

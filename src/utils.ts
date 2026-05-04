@@ -83,6 +83,8 @@ export interface Member {
   customFields?: CustomFieldValue[];
   sortOrder?: number;
   createdAt?: number;
+  // Stable cross-system identifier from the original source (SP _id, PK uuid, etc.).
+  sourceId?: string;
 }
 
 export type HistoryChangeType = 'front' | 'mood' | 'location' | 'note';
@@ -209,13 +211,37 @@ export const DEFAULT_MOODS = [
   'Dissociated', 'Grounded', 'Irritable', 'Sad', 'Focused',
 ];
 
+// translateMood handles both single-mood strings and comma-joined multi-mood strings
+// (e.g. "Calm, Anxious"). Each part is translated independently and rejoined with the
+// same separator. Custom (non-default) moods pass through unchanged.
 export const translateMood = (mood: string, t: (k: string) => string): string => {
   if (!mood) return '';
-  if (DEFAULT_MOODS.includes(mood)) {
-    const translated = t(`mood.${mood}`);
-    return translated && translated !== `mood.${mood}` ? translated : mood;
-  }
-  return mood;
+  const parts = mood.split(',').map(s => s.trim()).filter(Boolean);
+  if (parts.length === 0) return '';
+  const translateOne = (one: string): string => {
+    if (DEFAULT_MOODS.includes(one)) {
+      const translated = t(`mood.${one}`);
+      return translated && translated !== `mood.${one}` ? translated : one;
+    }
+    return one;
+  };
+  return parts.map(translateOne).join(', ');
+};
+
+// Helpers for the multi-select mood picker. Moods are stored as a comma-joined string
+// in the existing FrontTier.mood / HistoryEntry.mood field — no schema migration —
+// so existing single-mood entries (e.g. "Calm") parse cleanly to a one-element list.
+export const MOOD_DELIMITER = ', ';
+export const parseMoodList = (mood: string | undefined): string[] =>
+  (mood || '').split(',').map(s => s.trim()).filter(Boolean);
+export const serializeMoodList = (moods: string[]): string =>
+  moods.filter(Boolean).map(s => s.trim()).filter(Boolean).join(MOOD_DELIMITER);
+export const toggleMoodInList = (current: string | undefined, chip: string): string => {
+  const list = parseMoodList(current);
+  const i = list.indexOf(chip);
+  if (i >= 0) list.splice(i, 1);
+  else list.push(chip);
+  return serializeMoodList(list);
 };
 
 export const EMPTY_TIER: FrontTier = {memberIds: [], note: ''};

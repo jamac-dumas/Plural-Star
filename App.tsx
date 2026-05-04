@@ -8,11 +8,11 @@ import './src/i18n/i18n';
 import i18n, {changeLanguage} from './src/i18n/i18n';
 import type {SupportedLanguage} from './src/i18n/i18n';
 
-import {T, TLight, BUILTIN_PALETTES, deriveTheme} from './src/theme';
+import {T, BUILTIN_PALETTES, deriveTheme} from './src/theme';
 import type {CustomPalette, ThemeColors} from './src/theme';
 import {AccentText} from './src/components/AccentText';
 import {store, KEYS} from './src/storage';
-import {SystemInfo, Member, MemberGroup, FrontState, FrontTier, FrontTierKey, HistoryEntry, JournalEntry, ShareSettings, AppSettings, ChatChannel, ChatMessage, NoteboardEntry, DEFAULT_CHANNELS, EMPTY_TIER, findOpenFrontInHistory, migrateFrontState, isFrontEmpty, frontToHistoryEntry, uid} from './src/utils';
+import {SystemInfo, Member, MemberGroup, FrontState, FrontTier, FrontTierKey, HistoryEntry, JournalEntry, ShareSettings, AppSettings, ChatChannel, ChatMessage, NoteboardEntry, DEFAULT_CHANNELS, findOpenFrontInHistory, migrateFrontState, frontToHistoryEntry, uid} from './src/utils';
 import {migrateInlineAvatars, migrateInlineChatMedia, clearAllMedia} from './src/utils/mediaUtils';
 import {showFrontNotification, clearFrontNotification, scheduleFrontCheckReminder, cancelFrontCheckReminder, showNoteboardNotification, clearNoteboardNotification} from './src/services/NotificationService';
 
@@ -412,10 +412,20 @@ function MainAppContent() {
       newHistory = newHistory.map(e =>
         e.endTime === null && e.startTime === front.startTime && e.changeType === 'front' ? {...e, endTime: now} : e);
     }
-    const isEmpty = primary.memberIds.length === 0 && coFront.memberIds.length === 0 && coConscious.memberIds.length === 0;
+    // Bug 7B: a tier with zero memberIds must clear its mood/note/location/energyLevel.
+    // Without this, "remove last fronter from primary" preserves stale mood values that
+    // re-appear as selected chips next time the user opens the EditPrimaryFront modal.
+    const cleanTier = (tier: FrontTier): FrontTier =>
+      tier.memberIds.length === 0
+        ? {memberIds: [], mood: undefined, note: '', location: undefined, energyLevel: undefined}
+        : tier;
+    const cleanPrimary = cleanTier(primary);
+    const cleanCoFront = cleanTier(coFront);
+    const cleanCoConscious = cleanTier(coConscious);
+    const isEmpty = cleanPrimary.memberIds.length === 0 && cleanCoFront.memberIds.length === 0 && cleanCoConscious.memberIds.length === 0;
 
-    const quickLocation = primary.location?.trim() || lastKnownLocation || undefined;
-    const nf: FrontState | null = isEmpty ? null : {primary: {...primary, location: quickLocation}, coFront, coConscious, startTime: now};
+    const quickLocation = cleanPrimary.location?.trim() || lastKnownLocation || undefined;
+    const nf: FrontState | null = isEmpty ? null : {primary: {...cleanPrimary, location: quickLocation}, coFront: cleanCoFront, coConscious: cleanCoConscious, startTime: now};
 
     if (nf) {
       const frontEntry = frontToHistoryEntry(nf, null, 'front');
@@ -451,7 +461,7 @@ function MainAppContent() {
       }
     }
 
-    if (nf && appSettings.gpsEnabled && !primary.location?.trim()) {
+    if (nf && appSettings.gpsEnabled && !cleanPrimary.location?.trim()) {
       try {
         const gpsLocation = await getGPSLocation();
         if (gpsLocation && gpsLocation !== quickLocation) {
@@ -464,18 +474,6 @@ function MainAppContent() {
     } else if (quickLocation) {
       await updateLastLocation(quickLocation);
     }
-  };
-
-  const updateFrontNote = async (tier: FrontTierKey, note: string) => {
-    if (!front) return;
-    const now = Date.now();
-    const tierData = front[tier];
-    if (note === tierData.note) return;
-    const updated = {...front, [tier]: {...tierData, note}};
-    setFront(updated); await store.set(KEYS.front, updated);
-    const noteEntry = frontToHistoryEntry(updated, null, 'note', tier);
-    noteEntry.changeTime = now;
-    await saveHistory([noteEntry, ...history].slice(0, 1000));
   };
 
   const updateFrontDetails = async (tier: FrontTierKey, mood?: string, location?: string, note?: string) => {
@@ -567,7 +565,7 @@ function MainAppContent() {
   const renderScreen = () => {
     switch (tab) {
       case 'front':
-        return <FrontScreen theme={C} front={front} getMember={getMember} onSetFront={() => setShowSetFront(true)} onUpdateNote={updateFrontNote} onEditDetails={handleEditDetails} />;
+        return <FrontScreen theme={C} front={front} getMember={getMember} onSetFront={() => setShowSetFront(true)} onEditDetails={handleEditDetails} />;
       case 'members':
         return <MembersScreen theme={C} members={members} front={front} groups={groups} initialSortMode={appSettings.memberSortMode} onAdd={() => {setEditMember(null); setShowMember(true);}} onEdit={m => {setEditMember(m); setShowMember(true);}} onSaveGroups={saveGroups} onSaveSortMode={async (mode) => {const next = {...appSettings, memberSortMode: mode}; setAppSettings(next); await store.set(KEYS.settings, next);}} onReorderMember={async (id, direction) => {
           const active = members.filter(m => !m.archived);

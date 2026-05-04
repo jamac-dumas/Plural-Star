@@ -48,6 +48,11 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels}: Props)
   const [editChannelName, setEditChannelName] = useState('');
   const [showFormatBar, setShowFormatBar] = useState(false);
   const flatListRef = useRef<FlatList>(null);
+  // Bug 9: track whether the user is "at the bottom" of the chat. Only auto-scroll
+  // to the latest message when they are — otherwise scrolling up to read older
+  // messages snaps back to the bottom every time an image loads or a layout shifts
+  // (which is what Refugee Andros reported: "brings the chat logs back to one place").
+  const isAtBottomRef = useRef(true);
 
   const activeChannel = channels.find(c => c.id === activeChannelId);
   const activeMember = members.find(m => m.id === activeMemberId);
@@ -87,6 +92,7 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels}: Props)
     await saveMessages(activeChannelId, updated);
     setInput('');
     setReplyTo(null);
+    isAtBottomRef.current = true;
     setTimeout(() => flatListRef.current?.scrollToEnd({animated: true}), 100);
   };
 
@@ -100,7 +106,7 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels}: Props)
       const isImage = imageExts.includes(ext);
       const base64 = await RNFS.readFile(getPickedFilePath(res), 'base64');
       const msgId = uid();
-      const fileUri = await saveChatMedia(msgId, base64, fileName);
+      const fileUri = await saveChatMedia(msgId, base64, ext);
       const msg: ChatMessage = {
         id: msgId,
         channelId: activeChannelId,
@@ -111,7 +117,8 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels}: Props)
       };
       const updated = [...messages, msg];
       await saveMessages(activeChannelId, updated);
-      setTimeout(() => flatListRef.current?.scrollToEnd({animated: true}), 100);
+      isAtBottomRef.current = true;
+    setTimeout(() => flatListRef.current?.scrollToEnd({animated: true}), 100);
     } catch (e: any) {
       if (!isPickerCancel(e)) Alert.alert(t('chat.imageFailed'), e.message || '');
     }
@@ -379,7 +386,19 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels}: Props)
         keyExtractor={item => item.id}
         style={{flex: 1}}
         contentContainerStyle={{paddingVertical: 8}}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({animated: false})}
+        onScroll={e => {
+          // Distance from the bottom of the visible viewport to the bottom of the content.
+          // Within 64px = "at bottom" — covers the keyboard-ease/format-bar overshoot.
+          const {contentOffset, contentSize, layoutMeasurement} = e.nativeEvent;
+          const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+          isAtBottomRef.current = distanceFromBottom < 64;
+        }}
+        scrollEventThrottle={32}
+        onContentSizeChange={() => {
+          // Only auto-snap to the newest message if the user is actively reading the latest.
+          // If they've scrolled up, leave their position alone.
+          if (isAtBottomRef.current) flatListRef.current?.scrollToEnd({animated: false});
+        }}
         ListEmptyComponent={
           <View style={{alignItems: 'center', paddingVertical: 48}}>
             <Text style={{fontSize: fs(13), color: T.dim}}>{t('chat.noMessages')}</Text>

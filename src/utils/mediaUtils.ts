@@ -12,8 +12,8 @@ const AVATAR_DIR = `${RNFS.DocumentDirectoryPath}/ps_avatars`;
 const CHAT_MEDIA_DIR = `${RNFS.DocumentDirectoryPath}/ps_chat_media`;
 const BIO_IMAGE_DIR = `${RNFS.DocumentDirectoryPath}/ps_bio_images`;
 
-export const BANNER_WIDTH = 900;
-export const BANNER_HEIGHT = 300;
+const BANNER_WIDTH = 900;
+const BANNER_HEIGHT = 300;
 
 const ensureDir = async (dir: string) => {
   const exists = await RNFS.exists(dir);
@@ -99,21 +99,15 @@ export const saveChatMedia = async (messageId: string, base64: string, ext: stri
   return `file://${path}?t=${Date.now()}`;
 };
 
-export const saveChatFileFromUri = async (messageId: string, sourceUri: string, ext: string = 'bin'): Promise<string> => {
-  await ensureDir(CHAT_MEDIA_DIR);
-  const safeExt = ext.replace(/[^a-zA-Z0-9]/g, '') || 'bin';
-  const path = `${CHAT_MEDIA_DIR}/${messageId}.${safeExt}`;
-  await RNFS.copyFile(sourceUri.replace('file://', ''), path);
-  return `file://${path}?t=${Date.now()}`;
-};
-
-export const deleteChatMedia = async (messageId: string, ext: string = 'jpg'): Promise<void> => {
-  try {
-    const safeExt = ext.replace(/[^a-zA-Z0-9]/g, '') || 'bin';
-    const path = `${CHAT_MEDIA_DIR}/${messageId}.${safeExt}`;
-    const exists = await RNFS.exists(path);
-    if (exists) await RNFS.unlink(path);
-  } catch {}
+// Extract a display filename from a stored chat-media URI (strips file:// prefix,
+// directory path, and any cache-buster query string). Imported by ChatScreen for
+// the "file" message-type rendering. Returns "Attachment" if the URI is malformed.
+export const getChatMediaFileName = (uri: string): string => {
+  if (!uri) return 'Attachment';
+  const noProto = uri.replace(/^file:\/\//, '');
+  const noQuery = noProto.split('?')[0];
+  const basename = noQuery.split('/').pop() || '';
+  return basename || 'Attachment';
 };
 
 export const saveBioImage = async (
@@ -178,53 +172,6 @@ export const saveBannerImage = async (
   }
 };
 
-export const migrateInlineImagesInDescriptions = async (
-  members: any[]
-): Promise<{ members: any[]; changed: boolean }> => {
-  let changed = false;
-  const updated: any[] = [];
-
-  const imageRegex = /!\[([^\]]*)\]\(data:([^;]+);base64,([A-Za-z0-9+/=]+)\)/g;
-
-  for (const m of members) {
-    if (typeof m.description !== 'string' || !m.description.includes('data:')) {
-      updated.push(m);
-      continue;
-    }
-
-    let newDesc = m.description;
-    let match: RegExpExecArray | null;
-
-    while ((match = imageRegex.exec(m.description)) !== null) {
-      const alt = match[1];
-      const mime = match[2];
-      const b64 = match[3];
-
-      const extMap: Record<string, string> = {
-        'image/jpeg': 'jpg',
-        'image/png': 'png',
-        'image/gif': 'gif',
-        'image/webp': 'webp',
-      };
-      const ext = extMap[mime] || 'bin';
-
-      const bioId = `${m.id}_bio_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
-      try {
-        const fileUri = await saveBioImage(bioId, b64, ext);
-        newDesc = newDesc.replace(match[0], `![${alt}](${fileUri})`);
-        changed = true;
-      } catch (e) {
-        console.error('[PS] Failed to migrate bio image for', m.id, e);
-      }
-    }
-
-    updated.push({ ...m, description: newDesc });
-  }
-
-  return { members: updated, changed };
-};
-
 export const migrateInlineAvatars = async (members: any[]): Promise<{members: any[]; changed: boolean}> => {
   let changed = false;
   const updated = [];
@@ -281,5 +228,10 @@ export const clearAllMedia = async (): Promise<void> => {
     if (chatExists) await RNFS.unlink(CHAT_MEDIA_DIR);
     const bioExists = await RNFS.exists(BIO_IMAGE_DIR);
     if (bioExists) await RNFS.unlink(BIO_IMAGE_DIR);
+    // Also wipe ps_banners. saveBannerFromUrl writes here when a member's banner
+    // comes in via PluralKit/SP import, and prior to this fix Delete Account
+    // left those banner files on disk — a privacy regression vs the user's intent.
+    const bannerExists = await RNFS.exists(BANNER_DIR);
+    if (bannerExists) await RNFS.unlink(BANNER_DIR);
   } catch {}
 };

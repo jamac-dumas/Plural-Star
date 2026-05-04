@@ -27,8 +27,9 @@ const CRITICAL_KEYS = new Set([
 
 // Diagnostic flag — when true, logs every critical key read/write with size,
 // success/failure, and recovery actions. Investigating Samsung Galaxy device
-// reports of system info not persisting across launches.
-const STORAGE_DEBUG = true;
+// reports of system info not persisting across launches. Gated to __DEV__ so
+// production builds stay quiet; flip to a hard `true` to debug a release build.
+const STORAGE_DEBUG = __DEV__;
 
 const BACKUP_DIR = `${RNFS.DocumentDirectoryPath}/ps_backup`;
 

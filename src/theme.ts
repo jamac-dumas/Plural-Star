@@ -1,5 +1,3 @@
-import {StyleSheet} from 'react-native';
-
 export interface ThemeColors {
   bg: string;
   surface: string;
@@ -139,11 +137,8 @@ export const LIGHT_PALETTE: CustomPalette = {
 };
 
 export const T: ThemeColors = deriveTheme(DARK_PALETTE.bg, DARK_PALETTE.accent, DARK_PALETTE.text, DARK_PALETTE.mid);
-export const TLight: ThemeColors = deriveTheme(LIGHT_PALETTE.bg, LIGHT_PALETTE.accent, LIGHT_PALETTE.text, LIGHT_PALETTE.mid);
 
 export const BUILTIN_PALETTES: CustomPalette[] = [DARK_PALETTE, LIGHT_PALETTE];
-
-export const accentTextStyle = (_isLight: boolean) => ({});
 
 export const PALETTE = [
   '#DAA520', '#7B9FE8', '#E87BA8', '#7BE8C4',

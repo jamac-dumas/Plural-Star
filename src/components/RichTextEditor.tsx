@@ -46,7 +46,6 @@ const MdToolbar = ({onInsert, T}: {onInsert: (before: string, after: string) => 
 const MarkdownEditor = ({initialContent, theme: T, onSave, onClose, title}: {initialContent: string; theme: ThemeColors; onSave: (text: string) => void; onClose: () => void; title: string}) => {
   const insets = useSafeAreaInsets();
   const [text, setText] = useState(initialContent || '');
-  const [isSaving, setIsSaving] = useState(false);
 
   const insertFormat = (before: string, after: string) => {
     const placeholder = before.includes('<img') ? 'URL Here' : (after ? 'text' : '');
@@ -54,7 +53,6 @@ const MarkdownEditor = ({initialContent, theme: T, onSave, onClose, title}: {ini
   };
 
   const handleSave = () => {
-    if (isSaving) return;
     try {
       onSave(text);
     } catch (e) {
@@ -69,8 +67,8 @@ const MarkdownEditor = ({initialContent, theme: T, onSave, onClose, title}: {ini
           <Text style={{fontSize: 14, color: T.dim}}>{i18n.t('common.cancel')}</Text>
         </TouchableOpacity>
         <Text style={[s.headerTitle, {color: T.text}]}>{title}</Text>
-        <TouchableOpacity onPress={handleSave} disabled={isSaving} activeOpacity={0.7} style={[s.headerBtn, {alignItems: 'flex-end'}]}>
-          <Text style={{fontSize: 14, fontWeight: '600', color: isSaving ? T.dim : T.accent}}>{isSaving ? '…' : i18n.t('common.save')}</Text>
+        <TouchableOpacity onPress={handleSave} activeOpacity={0.7} style={[s.headerBtn, {alignItems: 'flex-end'}]}>
+          <Text style={{fontSize: 14, fontWeight: '600', color: T.accent}}>{i18n.t('common.save')}</Text>
         </TouchableOpacity>
       </View>
       <MdToolbar onInsert={insertFormat} T={T} />

@@ -6,7 +6,7 @@ import {safePick, isPickerCancel, getPickedFilePath} from '../utils/safePicker';
 import {Sheet} from '../components/Sheet';
 import {PALETTE, BUILTIN_PALETTES, deriveTheme} from '../theme';
 import type {CustomPalette} from '../theme';
-import {Member, MemberGroup, JournalEntry, FrontState, FrontTier, FrontTierKey, SystemInfo, AppSettings, TextScale, TEXT_SCALE_OPTIONS, CustomFieldDef, CustomFieldValue, NoteboardEntry, uid, isValidHex, normalizeHex, DEFAULT_MOODS, EMPTY_TIER, TIER_LABELS, fmtTime, getInitials, translateMood} from '../utils';
+import {Member, MemberGroup, JournalEntry, FrontState, FrontTier, FrontTierKey, SystemInfo, AppSettings, TextScale, TEXT_SCALE_OPTIONS, CustomFieldDef, CustomFieldValue, NoteboardEntry, uid, isValidHex, normalizeHex, DEFAULT_MOODS, EMPTY_TIER, TIER_LABELS, fmtTime, getInitials, translateMood, parseMoodList, toggleMoodInList, serializeMoodList} from '../utils';
 import {store, KEYS} from '../storage';
 import {SUPPORTED_LANGUAGES} from '../i18n/i18n';
 import type {SupportedLanguage} from '../i18n/i18n';
@@ -144,26 +144,35 @@ const TierMemberPicker = ({tierKey, selected, setSelected, members, groups, allA
 
 // ── Mood Picker (standalone to prevent re-mount on keystroke) ──────────────
 
-const MoodPicker = ({mood, setMood, customMood, setCustomMood, showCustom, setShowCustom, allMoods, T, t}: any) => (
-  <>
-    <Text style={{fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', color: T.dim, marginBottom: 6, fontWeight: '600'}}>{t('modal.mood')}</Text>
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 4}}>
-      <View style={{flexDirection: 'row', gap: 5}}>
-        {allMoods.map((m: string) => (
-          <TouchableOpacity key={m} onPress={() => {setMood(m); setShowCustom(false);}} activeOpacity={0.7}
-            style={{paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, backgroundColor: mood === m && !showCustom ? `${T.accent}20` : T.surface, borderColor: mood === m && !showCustom ? `${T.accent}60` : T.border}}>
-            <Text style={{fontSize: 11, color: mood === m && !showCustom ? T.accent : T.dim, fontWeight: mood === m && !showCustom ? '600' : '400'}}>{translateMood(m, t)}</Text>
-          </TouchableOpacity>))}
-        <TouchableOpacity onPress={() => {setShowCustom(true); setMood('');}} activeOpacity={0.7}
-          style={{paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, backgroundColor: showCustom ? `${T.accent}20` : T.surface, borderColor: showCustom ? `${T.accent}60` : T.border}}>
-          <Text style={{fontSize: 11, color: showCustom ? T.accent : T.dim}}>{t('modal.custom')}</Text>
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
-    {showCustom && <TextInput value={customMood} onChangeText={setCustomMood} placeholder={t('modal.enterMood')} placeholderTextColor={T.muted}
-      style={{backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 13, marginTop: 4}} />}
-  </>
-);
+const MoodPicker = ({mood, setMood, customMood, setCustomMood, showCustom, setShowCustom, allMoods, T, t}: any) => {
+  // Multi-select: tapping a chip toggles it on/off in the comma-joined `mood` string.
+  // Custom mood (showCustom + customMood) is a separate addendum, appended at save time
+  // by the caller's resolveMood helper. Selection state per chip is membership in
+  // parseMoodList(mood) — which gracefully degrades to a one-element list for legacy
+  // single-mood data.
+  const selected = parseMoodList(mood);
+  const isSel = (m: string) => selected.includes(m);
+  return (
+    <>
+      <Text style={{fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', color: T.dim, marginBottom: 6, fontWeight: '600'}}>{t('modal.mood')}</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 4}}>
+        <View style={{flexDirection: 'row', gap: 5}}>
+          {allMoods.map((m: string) => (
+            <TouchableOpacity key={m} onPress={() => setMood(toggleMoodInList(mood, m))} activeOpacity={0.7}
+              style={{paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, flexShrink: 0, backgroundColor: isSel(m) ? `${T.accent}20` : T.surface, borderColor: isSel(m) ? `${T.accent}60` : T.border}}>
+              <Text style={{fontSize: 11, color: isSel(m) ? T.accent : T.dim, fontWeight: isSel(m) ? '600' : '400'}}>{translateMood(m, t)}</Text>
+            </TouchableOpacity>))}
+          <TouchableOpacity onPress={() => setShowCustom(!showCustom)} activeOpacity={0.7}
+            style={{paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, flexShrink: 0, backgroundColor: showCustom ? `${T.accent}20` : T.surface, borderColor: showCustom ? `${T.accent}60` : T.border}}>
+            <Text style={{fontSize: 11, color: showCustom ? T.accent : T.dim, fontWeight: showCustom ? '600' : '400'}}>{showCustom ? `− ${t('modal.custom')}` : `+ ${t('modal.custom')}`}</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+      {showCustom && <TextInput value={customMood} onChangeText={setCustomMood} placeholder={t('modal.enterMood')} placeholderTextColor={T.muted}
+        style={{backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 13, marginTop: 4}} />}
+    </>
+  );
+};
 
 // ── Set Front Modal (three-tier, searchable chip picker) ──────────────────
 
@@ -222,7 +231,14 @@ export const SetFrontModal = ({visible, theme: T, members, groups, current, sett
     setter(newSet);
   };
 
-  const resolveMood = (mood: string, customMood: string, showCustom: boolean) => showCustom ? customMood || undefined : mood || undefined;
+  // Multi-mood resolve: combine chip selections (mood — already comma-joined) with the
+  // optional custom mood from the text input. Empty/whitespace strings drop out.
+  const resolveMood = (mood: string, customMood: string, showCustom: boolean) => {
+    const moods = parseMoodList(mood);
+    if (showCustom && customMood.trim()) moods.push(customMood.trim());
+    const joined = serializeMoodList(moods);
+    return joined || undefined;
+  };
 
   const handleSave = () => {
     Keyboard.dismiss();
@@ -311,11 +327,23 @@ export const EditFrontDetailModal = ({visible, theme: T, front, tier, settings, 
 
   return (
     <Sheet visible={visible} title={t('tier.editTier', {tier: tierLabel})} theme={T} onClose={onClose}
-      footer={<Btn T={T} onPress={() => {onSave(showCustomMood ? customMood || undefined : mood || undefined, isPrimary ? location || undefined : undefined, note || undefined); onClose();}}>{t('common.save')}</Btn>}>
+      footer={<Btn T={T} onPress={() => {
+        // Multi-mood resolve: chip-toggled list (mood) + optional custom mood appended.
+        const moods = parseMoodList(mood);
+        if (showCustomMood && customMood.trim()) moods.push(customMood.trim());
+        const resolved = serializeMoodList(moods) || undefined;
+        onSave(resolved, isPrimary ? location || undefined : undefined, note || undefined);
+        onClose();
+      }}>{t('common.save')}</Btn>}>
       <Text style={{fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', color: T.dim, marginBottom: 8, fontWeight: '600'}}>{t('modal.mood')}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 6}}><View style={{flexDirection: 'row', gap: 6}}>
-        {allMoods.map((m: string) => (<TouchableOpacity key={m} onPress={() => {setMood(m); setShowCustomMood(false);}} activeOpacity={0.7} style={{paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1, backgroundColor: mood === m && !showCustomMood ? `${T.accent}20` : T.surface, borderColor: mood === m && !showCustomMood ? `${T.accent}60` : T.border}}><Text style={{fontSize: 12, color: mood === m && !showCustomMood ? T.accent : T.dim}}>{translateMood(m, t)}</Text></TouchableOpacity>))}
-        <TouchableOpacity onPress={() => {setShowCustomMood(true); setMood('');}} activeOpacity={0.7} style={{paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1, backgroundColor: showCustomMood ? `${T.accent}20` : T.surface, borderColor: showCustomMood ? `${T.accent}60` : T.border}}><Text style={{fontSize: 12, color: showCustomMood ? T.accent : T.dim}}>{t('modal.custom')}</Text></TouchableOpacity>
+        {/* Multi-select: tap a chip to toggle it in the mood list. parseMoodList(mood) gives
+            the active chips; toggleMoodInList is the add/remove pivot. */}
+        {(() => { const sel = parseMoodList(mood); return allMoods.map((m: string) => {
+          const on = sel.includes(m);
+          return (<TouchableOpacity key={m} onPress={() => setMood(toggleMoodInList(mood, m))} activeOpacity={0.7} style={{paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1, flexShrink: 0, backgroundColor: on ? `${T.accent}20` : T.surface, borderColor: on ? `${T.accent}60` : T.border}}><Text style={{fontSize: 12, color: on ? T.accent : T.dim, fontWeight: on ? '600' : '400'}}>{translateMood(m, t)}</Text></TouchableOpacity>);
+        }); })()}
+        <TouchableOpacity onPress={() => setShowCustomMood(!showCustomMood)} activeOpacity={0.7} style={{paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1, flexShrink: 0, backgroundColor: showCustomMood ? `${T.accent}20` : T.surface, borderColor: showCustomMood ? `${T.accent}60` : T.border}}><Text style={{fontSize: 12, color: showCustomMood ? T.accent : T.dim, fontWeight: showCustomMood ? '600' : '400'}}>{showCustomMood ? `− ${t('modal.custom')}` : `+ ${t('modal.custom')}`}</Text></TouchableOpacity>
       </View></ScrollView>
       {showCustomMood && <TextInput value={customMood} onChangeText={setCustomMood} placeholder={t('modal.enterMood')} placeholderTextColor={T.muted} style={{backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, marginTop: 6}} />}
       {isPrimary && (<><View style={{height: 12}} /><Text style={{fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', color: T.dim, marginBottom: 8, fontWeight: '600'}}>{t('modal.location')}</Text>
