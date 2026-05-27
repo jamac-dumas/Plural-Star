@@ -1,27 +1,11 @@
 import React, {useState, useMemo, useDeferredValue, useRef} from 'react';
-import {View, ScrollView, TouchableOpacity, StyleSheet, Image, Alert} from 'react-native';
+import {View, ScrollView, TouchableOpacity, StyleSheet, Alert} from 'react-native';
 import {Text, TextInput} from '../components/AppText';
+import {Avatar} from '../components/Avatar';
 import {FlashList} from '@shopify/flash-list';
 import {useTranslation} from 'react-i18next';
 import {Fonts, PALETTE} from '../theme';
-import {Member, MemberGroup, FrontState, FrontTierKey, MemberSortMode, getInitials, allFrontMemberIds, uid, isValidHex, normalizeHex, sortMembers} from '../utils';
-
-const Avatar = ({member, size = 40, pulse = false, T}: {member?: Member | null; size?: number; pulse?: boolean; T: any}) => {
-  if (member?.avatar) {
-    return (
-      <View style={{width: size, height: size, borderRadius: size / 2,
-        shadowColor: pulse ? member.color : 'transparent', shadowOpacity: pulse ? 0.5 : 0, shadowRadius: pulse ? 8 : 0, elevation: pulse ? 4 : 0}}>
-        <Image source={{uri: member.avatar}} style={{width: size, height: size, borderRadius: size / 2}} />
-      </View>
-    );
-  }
-  return (
-    <View style={{width: size, height: size, borderRadius: size / 2, backgroundColor: member?.color || T.toggleOff, alignItems: 'center', justifyContent: 'center',
-      shadowColor: pulse ? member?.color : 'transparent', shadowOpacity: pulse ? 0.5 : 0, shadowRadius: pulse ? 8 : 0, elevation: pulse ? 4 : 0}}>
-      <Text style={{fontSize: size * 0.35, fontWeight: '700', color: 'rgba(0,0,0,0.75)'}}>{getInitials(member?.name || '?')}</Text>
-    </View>
-  );
-};
+import {Member, MemberGroup, FrontState, FrontTierKey, MemberSortMode, allFrontMemberIds, uid, isValidHex, normalizeHex, sortMembers} from '../utils';
 
 const getMemberTier = (id: string, front: FrontState | null): FrontTierKey | null => {
   if (!front) return null;
@@ -203,8 +187,8 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
           <Avatar member={m} size={44} pulse={isFronting} T={T} />
           <View style={{flex: 1, overflow: 'hidden'}}>
             <View style={{flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2}}>
-              <Text style={{fontSize: fs(15), fontWeight: '500', color: T.text}}>{m.name}</Text>
-              {badgeCfg && (<View style={{paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: `${badgeColor}18`, borderWidth: 1, borderColor: `${badgeColor}35`}}><Text style={{fontSize: fs(10), color: badgeColor, fontWeight: '500'}}>{t(badgeCfg.i18nKey)}</Text></View>)}
+              <Text style={{fontSize: fs(15), fontWeight: '500', color: T.text, flexShrink: 1}} numberOfLines={1} maxFontSizeMultiplier={1.4}>{m.name}</Text>
+              {badgeCfg && (<View style={{paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: `${badgeColor}18`, borderWidth: 1, borderColor: `${badgeColor}35`, flexShrink: 0}}><Text style={{fontSize: fs(10), color: badgeColor, fontWeight: '500'}} numberOfLines={1} maxFontSizeMultiplier={1.3}>{t(badgeCfg.i18nKey)}</Text></View>)}
             </View>
             <Text style={{fontSize: fs(12), color: T.dim}}>{[m.pronouns, m.role].filter(Boolean).join(' · ') || t('members.noDetails')}</Text>
             {memberGroups.length > 0 && (
@@ -247,8 +231,7 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
           <Text
             style={[s.heading, {color: T.text, fontSize: fs(22), flex: 1, marginRight: 8}]}
             numberOfLines={1}
-            adjustsFontSizeToFit
-            minimumFontScale={0.5}>
+            maxFontSizeMultiplier={1.2}>
             {t('members.selectedCount', {count: selectedIds.size, defaultValue: `${selectedIds.size} selected`})}
           </Text>
           <View style={{flexDirection: 'row', gap: 6}}>
@@ -264,31 +247,30 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
         </View>
       ) : (
         <View style={s.headerRow}>
-          <View style={{flex: 1}}>
+          <View style={{flexShrink: 1, marginRight: 8}}>
             <Text
               style={[s.heading, {color: T.text}]}
               numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.5}>
+              maxFontSizeMultiplier={1.2}>
               {t('members.title')}
             </Text>
-            <Text style={{fontSize: fs(11), color: T.dim, marginTop: 2}}>
+            <Text style={{fontSize: fs(11), color: T.dim, marginTop: 2}} numberOfLines={1} maxFontSizeMultiplier={1.2}>
               {(query || activeGroup || activeTag)
                 ? t('members.countFiltered', {filtered: filtered.length, total: tabMembers.length, defaultValue: `${filtered.length} of ${tabMembers.length} members`})
                 : t('members.count', {count: tabMembers.length, defaultValue: `${tabMembers.length} member${tabMembers.length === 1 ? '' : 's'}`})}
             </Text>
           </View>
-          <View style={{flexDirection: 'row', gap: 6}}>
+          <View style={{flexDirection: 'row', gap: 6, flexShrink: 0}}>
             <TouchableOpacity onPress={() => enterSelection()} activeOpacity={0.7}
               style={[s.addBtn, {backgroundColor: T.surface, borderColor: T.border}]}>
-              <Text style={{fontSize: fs(12), fontWeight: '500', color: T.dim}}>{t('members.select', {defaultValue: 'Select'})}</Text>
+              <Text style={{fontSize: fs(12), fontWeight: '500', color: T.dim}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} maxFontSizeMultiplier={1.2}>{t('members.select', {defaultValue: 'Select'})}</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowManageGroups(!showManageGroups)} activeOpacity={0.7}
               style={[s.addBtn, {backgroundColor: showManageGroups ? `${T.info}18` : T.surface, borderColor: showManageGroups ? `${T.info}50` : T.border}]}>
-              <Text style={{fontSize: fs(12), fontWeight: '500', color: showManageGroups ? T.info : T.dim}}>{t('memberGroups.manage')}</Text>
+              <Text style={{fontSize: fs(12), fontWeight: '500', color: showManageGroups ? T.info : T.dim}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} maxFontSizeMultiplier={1.2}>{t('memberGroups.manage')}</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={onAdd} activeOpacity={0.7} style={[s.addBtn, {backgroundColor: T.accentBg, borderColor: `${T.accent}40`}]}>
-              <Text style={{fontSize: fs(13), fontWeight: '500', color: T.accent}}>{t('members.add')}</Text>
+              <Text style={{fontSize: fs(13), fontWeight: '500', color: T.accent}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} maxFontSizeMultiplier={1.2}>{t('members.add')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -357,7 +339,7 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
                 <>
                   <Text style={{flex: 1, fontSize: fs(14), color: T.text, fontWeight: '500'}}>{g.name}</Text>
                   <Text style={{fontSize: fs(11), color: T.muted}}>{members.filter(m => (m.groupIds || []).includes(g.id)).length}</Text>
-                  <TouchableOpacity onPress={() => {setEditGroupId(g.id); setEditGroupName(g.name);}} style={{padding: 4}}><Text style={{fontSize: fs(12), color: T.dim}}>✎</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => {setEditGroupId(g.id); setEditGroupName(g.name);}} activeOpacity={0.7} style={{paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}><Text style={{fontSize: fs(11), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('common.edit', {defaultValue: 'Edit'})}</Text></TouchableOpacity>
                   <TouchableOpacity onPress={() => deleteGroup(g.id)} style={{padding: 4}}><Text style={{fontSize: fs(12), color: T.danger}}>✕</Text></TouchableOpacity>
                 </>
               )}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useState, useEffect} from 'react';
 import {View, Image} from 'react-native';
 import {Text} from './AppText';
 import {Member, getInitials} from '../utils';
@@ -11,6 +11,9 @@ interface AvatarProps {
 }
 
 export const Avatar = ({member, size = 28, pulse = false, T}: AvatarProps) => {
+  const [imgError, setImgError] = useState(false);
+  useEffect(() => { setImgError(false); }, [member?.avatar]);
+
   const pulseStyle = pulse
     ? {
         shadowColor: member?.color || 'transparent',
@@ -25,18 +28,21 @@ export const Avatar = ({member, size = 28, pulse = false, T}: AvatarProps) => {
         elevation: 0,
       };
 
-  if (member?.avatar) {
+  if (member?.avatar && !imgError) {
     return (
       <View
         style={{
           width: size,
           height: size,
           borderRadius: size / 2,
+          overflow: 'hidden',
+          backgroundColor: member?.color || T.toggleOff,
           ...pulseStyle,
         }}>
         <Image
           source={{uri: member.avatar}}
-          style={{width: size, height: size, borderRadius: size / 2}}
+          style={{width: size, height: size}}
+          onError={() => setImgError(true)}
         />
       </View>
     );
@@ -48,6 +54,7 @@ export const Avatar = ({member, size = 28, pulse = false, T}: AvatarProps) => {
         width: size,
         height: size,
         borderRadius: size / 2,
+        overflow: 'hidden',
         backgroundColor: member?.color || T.toggleOff,
         alignItems: 'center',
         justifyContent: 'center',
@@ -58,7 +65,8 @@ export const Avatar = ({member, size = 28, pulse = false, T}: AvatarProps) => {
           fontSize: size * 0.35,
           fontWeight: '700',
           color: 'rgba(0,0,0,0.75)',
-        }}>
+        }}
+        allowFontScaling={false}>
         {getInitials(member?.name || '?')}
       </Text>
     </View>

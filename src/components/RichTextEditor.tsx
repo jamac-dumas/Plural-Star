@@ -132,11 +132,11 @@ const MarkdownEditor = ({initialContent, theme: T, onSave, onClose, title, membe
     <View style={[s.container, {backgroundColor: T.bg, paddingTop: Platform.OS === 'ios' ? insets.top : 0}]}>
       <View style={[s.header, {borderBottomColor: T.border, backgroundColor: T.bg}]}>
         <TouchableOpacity onPress={onClose} activeOpacity={0.7} style={s.headerBtn}>
-          <Text style={{fontSize: fs(14), color: T.dim}}>{i18n.t('common.cancel')}</Text>
+          <Text style={{fontSize: fs(14), color: T.dim}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{i18n.t('common.cancel')}</Text>
         </TouchableOpacity>
-        <Text style={[s.headerTitle, {color: T.text}]}>{title}</Text>
+        <Text style={[s.headerTitle, {color: T.text, flex: 1, textAlign: 'center', marginHorizontal: 8}]} numberOfLines={1} maxFontSizeMultiplier={1.2}>{title}</Text>
         <TouchableOpacity onPress={handleSave} activeOpacity={0.7} style={[s.headerBtn, {alignItems: 'flex-end'}]}>
-          <Text style={{fontSize: fs(14), fontWeight: '600', color: T.accent}}>{i18n.t('common.save')}</Text>
+          <Text style={{fontSize: fs(14), fontWeight: '600', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{i18n.t('common.save')}</Text>
         </TouchableOpacity>
       </View>
       <View style={{flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: T.border, backgroundColor: T.surface}}>

@@ -56,7 +56,7 @@
     "addMood": "+ Stimmung hinzufügen",
     "frontNote": "NOTIZ",
     "whatHappening": "Was passiert gerade?",
-    "noNote": "Keine Notiz. Tippe ✎ um eine hinzuzufügen.",
+    "noNote": "Keine Notiz. Tippe Bearbeiten, um eine hinzuzufügen.",
     "clearFront": "Front leeren",
     "clearFrontMsg": "Dies leert alle Ebenen und protokolliert das Ende der Sitzung. Fortfahren?",
     "clearFrontTitle": "Front leeren?"

@@ -2,7 +2,7 @@ import React from 'react';
 import {Text as RNText, TextInput as RNTextInput, TextProps, TextInputProps, StyleSheet} from 'react-native';
 import {DYSLEXIC_FONT} from '../theme';
 
-let _enabled = true;
+let _enabled = false;
 export const setAppTextDyslexicEnabled = (on: boolean) => { _enabled = on; };
 export const isAppTextDyslexicEnabled = () => _enabled;
 

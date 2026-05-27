@@ -20,6 +20,7 @@ const ANDROID_NAV_BAR_FLOOR = 24;
 
 export const Sheet = ({visible, title, theme: T, onClose, children, footer}: SheetProps) => {
   const sheetRef = useRef<TrueSheet>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const insets = useSafeAreaInsets();
   const rawBottomInset = isIPad ? 0 : insets.bottom;
   const bottomInset = Platform.OS === 'android'
@@ -54,6 +55,7 @@ export const Sheet = ({visible, title, theme: T, onClose, children, footer}: She
   return (
     <TrueSheet
       ref={sheetRef}
+      scrollRef={scrollRef as any}
       detents={[0.92]}
       cornerRadius={20}
       backgroundColor={T.card}
@@ -79,10 +81,12 @@ export const Sheet = ({visible, title, theme: T, onClose, children, footer}: She
       }
     >
       <ScrollView
+        ref={scrollRef}
         style={s.body}
         contentContainerStyle={{paddingBottom: scrollPaddingBottom}}
         showsVerticalScrollIndicator
         keyboardShouldPersistTaps="handled"
+        nestedScrollEnabled
       >
         {children}
       </ScrollView>

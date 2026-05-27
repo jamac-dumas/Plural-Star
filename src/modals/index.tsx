@@ -6,7 +6,7 @@ import {pickImageFromGallery} from '../utils/imagePicker';
 import {Sheet} from '../components/Sheet';
 import {PALETTE, BUILTIN_PALETTES, deriveTheme} from '../theme';
 import type {CustomPalette} from '../theme';
-import {Member, MemberGroup, JournalEntry, JournalTemplate, FrontState, FrontTier, FrontTierKey, SystemInfo, AppSettings, TextScale, TEXT_SCALE_OPTIONS, CustomFieldDef, CustomFieldValue, NoteboardEntry, uid, isValidHex, normalizeHex, DEFAULT_MOODS, EMPTY_TIER, TIER_LABELS, fmtTime, getInitials, translateMood, parseMoodList, toggleMoodInList, serializeMoodList} from '../utils';
+import {Member, MemberGroup, JournalEntry, JournalTemplate, FrontState, FrontTier, FrontTierKey, SystemInfo, AppSettings, TextScale, TEXT_SCALE_OPTIONS, CustomFieldDef, CustomFieldValue, NoteboardEntry, uid, isValidHex, normalizeHex, DEFAULT_MOODS, EMPTY_TIER, TIER_LABELS, fmtTime, getInitials, translateMood, parseMoodList, toggleMoodInList, serializeMoodList, sortMembersBySearch} from '../utils';
 import {store, KEYS} from '../storage';
 import {SUPPORTED_LANGUAGES} from '../i18n/i18n';
 import type {SupportedLanguage} from '../i18n/i18n';
@@ -61,12 +61,13 @@ const TierMemberPicker = ({tierKey, selected, setSelected, members, groups, allA
   const allTags = useMemo(() => [...new Set(members.flatMap(m => m.tags || []))].sort(), [members]);
 
   const filtered = useMemo(() => {
-    return members.filter(m => {
+    const matches = members.filter(m => {
       if (selected.has(m.id)) return false;
       const nameMatch = !search || m.name.toLowerCase().includes(search.toLowerCase());
       const tagMatch = !filterTag || (m.tags || []).includes(filterTag);
       return nameMatch && tagMatch;
     });
+    return sortMembersBySearch(matches, search);
   }, [members, search, filterTag, selected]);
 
   const toggle = (id: string) => {
@@ -888,7 +889,7 @@ export const JournalModal = ({visible, theme: T, entry, members, templates, onSa
         {authorSearch.length > 0 && (
           <View style={{backgroundColor: T.card, borderRadius: 8, borderWidth: 1, borderColor: T.border, maxHeight: 160, overflow: 'hidden', marginBottom: 8}}>
             <ScrollView nestedScrollEnabled>
-              {members.filter((m: Member) => !m.archived && m.name.toLowerCase().includes(authorSearch.toLowerCase())).map((m: Member) => {
+              {sortMembersBySearch(members.filter((m: Member) => !m.archived && m.name.toLowerCase().includes(authorSearch.toLowerCase())), authorSearch).map((m: Member) => {
                 const active = (f.authorIds || []).includes(m.id);
                 return (
                   <TouchableOpacity key={m.id} onPress={() => {togAuthor(m.id); setAuthorSearch('');}} activeOpacity={0.7}
@@ -1166,7 +1167,7 @@ export const SystemModal = ({visible, theme: T, system, settings, palettes, acti
                 {isActive && <Text style={{fontSize: fs(12), color: p.accent}}>✓</Text>}
                 {!isBuiltIn && (
                   <View style={{flexDirection: 'row', gap: 8}}>
-                    <TouchableOpacity onPress={() => startEditPalette(p)} activeOpacity={0.7}><Text style={{fontSize: fs(12), color: T.dim}}>✎</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={() => startEditPalette(p)} activeOpacity={0.7} style={{paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}><Text style={{fontSize: fs(11), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('common.edit', {defaultValue: 'Edit'})}</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => deletePalette(p.id)} activeOpacity={0.7}><Text style={{fontSize: fs(12), color: T.danger}}>✕</Text></TouchableOpacity>
                   </View>
                 )}

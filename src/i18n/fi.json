@@ -56,7 +56,7 @@
     "addMood": "+ Lisää mieliala",
     "frontNote": "MUISTIINPANO",
     "whatHappening": "Mitä tapahtuu juuri nyt?",
-    "noNote": "Ei muistiinpanoa. Napauta ✎ lisätäksesi.",
+    "noNote": "Ei muistiinpanoa. Napauta Muokkaa lisätäksesi.",
     "clearFront": "Tyhjennä front",
     "clearFrontMsg": "Tämä tyhjentää kaikki tasot ja kirjaa istunnon loppumisen. Jatketaanko?",
     "clearFrontTitle": "Tyhjennetäänkö front?"

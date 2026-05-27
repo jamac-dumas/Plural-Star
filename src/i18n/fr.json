@@ -56,7 +56,7 @@
     "addMood": "+ Ajouter humeur",
     "frontNote": "NOTE",
     "whatHappening": "Que se passe-t-il en ce moment ?",
-    "noNote": "Aucune note. Appuyez sur ✎ pour en ajouter une.",
+    "noNote": "Aucune note. Appuyez sur Modifier pour en ajouter une.",
     "clearFront": "Effacer le front",
     "clearFrontMsg": "Cela effacera tous les niveaux et enregistrera la fin de la session. Continuer ?",
     "clearFrontTitle": "Effacer le front ?"

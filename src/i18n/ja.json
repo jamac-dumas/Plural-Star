@@ -56,7 +56,7 @@
     "addMood": "+ 気分を追加",
     "frontNote": "メモ",
     "whatHappening": "今何が起きていますか？",
-    "noNote": "メモなし。✎ をタップして追加。",
+    "noNote": "メモなし。「編集」をタップして追加。",
     "clearFront": "フロントをクリア",
     "clearFrontTitle": "フロントをクリアしますか？",
     "clearFrontMsg": "すべての階層がクリアされ、現在のセッションの終了が記録されます。続行しますか？"

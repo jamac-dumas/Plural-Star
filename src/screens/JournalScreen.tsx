@@ -3,7 +3,7 @@ import {View, ScrollView, TouchableOpacity, Modal, Alert, Image, StyleSheet} fro
 import {Text, TextInput} from '../components/AppText';
 import {useTranslation} from 'react-i18next';
 import {Fonts} from '../theme';
-import {JournalEntry, JournalTemplate, Member, fmtTime} from '../utils';
+import {JournalEntry, JournalTemplate, Member, fmtTime, sortMembersBySearch} from '../utils';
 import {exportEntryTxt, exportEntryMd, exportEntryJSON} from '../export/exportUtils';
 import {RichText} from '../components/MarkdownRenderer';
 import {JournalTemplateModal} from '../modals';
@@ -67,7 +67,7 @@ export const JournalScreen = ({theme: T, journal, templates, members, systemJour
   });
 
   const filteredTags = allTags.filter(tag => !tagSearch || tag.toLowerCase().includes(tagSearch.toLowerCase()));
-  const filteredAuthors = activeAuthors.filter(m => !authorSearch || m.name.toLowerCase().includes(authorSearch.toLowerCase()));
+  const filteredAuthors = sortMembersBySearch(activeAuthors.filter(m => !authorSearch || m.name.toLowerCase().includes(authorSearch.toLowerCase())), authorSearch);
 
   const handleGlobalUnlock = () => {
     if (globalPwInput === systemJournalPassword) {setJournalUnlocked(true); setGlobalPwError(false); setGlobalPwInput('');}
@@ -135,8 +135,7 @@ export const JournalScreen = ({theme: T, journal, templates, members, systemJour
         <Text
           style={[s.heading, {color: T.text, flex: 1, marginRight: 8}]}
           numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.5}>
+          maxFontSizeMultiplier={1.2}>
           {t('journal.title')}
         </Text>
         <TouchableOpacity
@@ -297,7 +296,7 @@ export const JournalScreen = ({theme: T, journal, templates, members, systemJour
                   <Text style={{fontSize: fs(15), fontWeight: '500', color: T.text, flex: 1, marginRight: 8}} numberOfLines={2}>{e.title || t('common.untitled')}</Text>
                   <View style={{flexDirection: 'row', alignItems: 'center', gap: 4}}>
                     {isLocked && <Text style={{fontSize: fs(13)}}>🔒</Text>}
-                    <TouchableOpacity onPress={() => handleEntryTap(e)} style={{padding: 4}}><Text style={{fontSize: fs(14), color: T.dim}}>✎</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={() => handleEntryTap(e)} activeOpacity={0.7} style={{paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}><Text style={{fontSize: fs(11), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('common.edit', {defaultValue: 'Edit'})}</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => setExportMenuEntry(e)} style={{padding: 4}}><Text style={{fontSize: fs(14), color: T.dim}}>↑</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => handleDeleteTap(e)} style={{padding: 4}}><Text style={{fontSize: fs(14), color: T.muted}}>✕</Text></TouchableOpacity>
                   </View>

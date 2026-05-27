@@ -177,6 +177,7 @@ export interface ExportPayload {
   customFieldDefs?: CustomFieldDef[];
   noteboards?: NoteboardEntry[];
   polls?: MemberPoll[];
+  journalTemplates?: JournalTemplate[];
 }
 
 export type ChatMessageType = 'text' | 'image' | 'file' | 'reply' | 'reaction';
@@ -345,6 +346,20 @@ export const isValidHex = (hex: string): boolean =>
 
 export const normalizeHex = (input: string): string =>
   (input.startsWith('#') ? input : `#${input}`).toUpperCase();
+
+export const sortMembersBySearch = <T extends {name: string}>(items: T[], search: string): T[] => {
+  if (!search) return [...items].sort((a, b) => a.name.localeCompare(b.name));
+  const q = search.toLowerCase();
+  return [...items].sort((a, b) => {
+    const an = a.name.toLowerCase();
+    const bn = b.name.toLowerCase();
+    const aStarts = an.startsWith(q);
+    const bStarts = bn.startsWith(q);
+    if (aStarts && !bStarts) return -1;
+    if (!aStarts && bStarts) return 1;
+    return an.localeCompare(bn);
+  });
+};
 
 export const sortMembers = (members: Member[], mode: MemberSortMode = 'alphabetical'): Member[] => {
   const sorted = [...members];

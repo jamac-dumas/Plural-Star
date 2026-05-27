@@ -1,26 +1,17 @@
 import React, {useState, useEffect, useRef, useCallback} from 'react';
 import {View, ScrollView, TouchableOpacity, Alert, FlatList, Image, Linking, Platform} from 'react-native';
 import {Text, TextInput} from '../components/AppText';
+import {Avatar} from '../components/Avatar';
 import {useTranslation} from 'react-i18next';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import Share from 'react-native-share';
 import {safePick, isPickerCancel, getPickedFilePath} from '../utils/safePicker';
 import {Fonts} from '../theme';
-import {Member, ChatChannel, ChatMessage, DEFAULT_CHANNELS, uid, getInitials, fmtTime} from '../utils';
+import {Member, ChatChannel, ChatMessage, DEFAULT_CHANNELS, uid, fmtTime, sortMembersBySearch} from '../utils';
 import {store, chatMsgKey} from '../storage';
 import {RichText as RichContent} from '../components/MarkdownRenderer';
 import {saveChatMedia, getChatMediaFileName} from '../utils/mediaUtils';
-
-const Avatar = ({member, size = 28, T}: {member?: Member | null; size?: number; T: any}) => {
-  if (member?.avatar) {
-    return <Image source={{uri: member.avatar}} style={{width: size, height: size, borderRadius: size / 2}} />;
-  }
-  return (
-    <View style={{width: size, height: size, borderRadius: size / 2, backgroundColor: member?.color || T.toggleOff, alignItems: 'center', justifyContent: 'center'}}>
-      <Text style={{fontSize: size * 0.35, fontWeight: '700', color: 'rgba(0,0,0,0.75)'}}>{getInitials(member?.name || '?')}</Text>
-    </View>
-  );
-};
+import {showChatPingNotification} from '../services/NotificationService';
 
 const EMOJI_QUICK = ['👍', '❤️', '😂', '😢', '😮', '🎉', '✨', '🔥'];
 
@@ -49,6 +40,8 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
   const [editChannelId, setEditChannelId] = useState<string | null>(null);
   const [editChannelName, setEditChannelName] = useState('');
   const [showFormatBar, setShowFormatBar] = useState(false);
+  const [actionsForMessage, setActionsForMessage] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const isAtBottomRef = useRef(true);
 
@@ -138,6 +131,64 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
     });
     await saveMessages(activeChannelId, updated);
     setShowEmojiFor(null);
+  };
+
+  const startEditMessage = (msg: ChatMessage) => {
+    if (msg.type !== 'text' && msg.type !== 'reply') return;
+    setEditingMessageId(msg.id);
+    setInput(msg.content);
+    setActionsForMessage(null);
+  };
+
+  const cancelEditMessage = () => {
+    setEditingMessageId(null);
+    setInput('');
+  };
+
+  const saveEditedMessage = async () => {
+    if (!editingMessageId || !activeChannelId) return;
+    const next = input.trim();
+    if (!next) { cancelEditMessage(); return; }
+    const updated = messages.map(m =>
+      m.id === editingMessageId ? {...m, content: next} : m
+    );
+    await saveMessages(activeChannelId, updated);
+    cancelEditMessage();
+  };
+
+  const deleteMessage = (msg: ChatMessage) => {
+    if (!activeChannelId) return;
+    setActionsForMessage(null);
+    Alert.alert(
+      t('chat.deleteMsg', {defaultValue: 'Delete message?'}),
+      t('chat.deleteMsgConfirm', {defaultValue: 'This message will be removed permanently.'}),
+      [
+        {text: t('common.cancel'), style: 'cancel'},
+        {text: t('common.delete'), style: 'destructive', onPress: async () => {
+          const updated = messages.filter(m => m.id !== msg.id);
+          await saveMessages(activeChannelId, updated);
+          if (editingMessageId === msg.id) cancelEditMessage();
+        }},
+      ],
+    );
+  };
+
+  const pingMessage = async (msg: ChatMessage) => {
+    if (!activeChannel) return;
+    const author = getMember(msg.authorId);
+    const speaker = author?.name || t('common.unknown', {defaultValue: 'Unknown'});
+    let preview = '';
+    if (msg.type === 'image') preview = t('chat.imagePreview', {defaultValue: '[image]'});
+    else if (msg.type === 'file') preview = `📄 ${getChatMediaFileName(msg.content)}`;
+    else preview = (msg.content || '').replace(/<[^>]+>/g, '').replace(/[#*`~_]/g, '').trim();
+    await showChatPingNotification(activeChannel.name, speaker, preview);
+    setActionsForMessage(null);
+    if (Platform.OS === 'ios') {
+      Alert.alert(
+        t('chat.pingSent', {defaultValue: 'Pinged'}),
+        t('chat.pingSentMsg', {defaultValue: 'Background notifications are Android-only right now — but the message is highlighted in your chat.'}),
+      );
+    }
   };
 
   const createChannel = () => {
@@ -279,6 +330,7 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
           <View style={{flexDirection: 'row', gap: 4, paddingTop: 2}}>
             <TouchableOpacity onPress={() => setReplyTo(msg)} activeOpacity={0.7}><Text style={{fontSize: fs(12), color: T.dim}}>↩</Text></TouchableOpacity>
             <TouchableOpacity onPress={() => setShowEmojiFor(showEmojiFor === msg.id ? null : msg.id)} activeOpacity={0.7}><Text style={{fontSize: fs(12), color: T.dim}}>☺</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setActionsForMessage(actionsForMessage === msg.id ? null : msg.id)} activeOpacity={0.7}><Text style={{fontSize: fs(14), color: actionsForMessage === msg.id ? T.accent : T.dim, fontWeight: '700'}}>⋯</Text></TouchableOpacity>
           </View>
         </View>
         {showEmojiFor === msg.id && (
@@ -288,6 +340,21 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
                 <Text style={{fontSize: fs(18)}}>{e}</Text>
               </TouchableOpacity>
             ))}
+          </View>
+        )}
+        {actionsForMessage === msg.id && (
+          <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginLeft: 38, marginTop: 4, padding: 6, backgroundColor: T.card, borderRadius: 8, borderWidth: 1, borderColor: T.border}}>
+            {(msg.type === 'text' || msg.type === 'reply') && (
+              <TouchableOpacity onPress={() => startEditMessage(msg)} activeOpacity={0.7} style={{paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}>
+                <Text style={{fontSize: fs(11), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('common.edit', {defaultValue: 'Edit'})}</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity onPress={() => pingMessage(msg)} activeOpacity={0.7} style={{paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, backgroundColor: T.infoBg, borderColor: `${T.info}40`}}>
+              <Text style={{fontSize: fs(11), fontWeight: '500', color: T.info}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('chat.ping', {defaultValue: 'Ping'})}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => deleteMessage(msg)} activeOpacity={0.7} style={{paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, backgroundColor: T.dangerBg, borderColor: `${T.danger}40`}}>
+              <Text style={{fontSize: fs(11), fontWeight: '500', color: T.danger}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('common.delete', {defaultValue: 'Delete'})}</Text>
+            </TouchableOpacity>
           </View>
         )}
       </View>
@@ -314,7 +381,7 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
                   style={{flex: 1, padding: 12, borderRadius: 10, borderWidth: 1, backgroundColor: T.card, borderColor: activeChannelId === ch.id ? `${T.accent}50` : T.border}}>
                   <Text style={{fontSize: fs(14), fontWeight: '500', color: T.text}}># {ch.name}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => {setEditChannelId(ch.id); setEditChannelName(ch.name);}}><Text style={{fontSize: fs(12), color: T.dim}}>✎</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => {setEditChannelId(ch.id); setEditChannelName(ch.name);}} activeOpacity={0.7} style={{paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}><Text style={{fontSize: fs(11), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('common.edit', {defaultValue: 'Edit'})}</Text></TouchableOpacity>
                 <TouchableOpacity onPress={() => archiveChannel(ch.id)}><Text style={{fontSize: fs(12), color: T.info}}>▼</Text></TouchableOpacity>
                 <TouchableOpacity onPress={() => deleteChannel(ch.id)}><Text style={{fontSize: fs(12), color: T.danger}}>✕</Text></TouchableOpacity>
               </>
@@ -375,7 +442,7 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
             style={{backgroundColor: T.bg, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, fontSize: fs(13), marginBottom: 6}} />
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={{flexDirection: 'row', gap: 6}}>
-              {members.filter(m => !m.archived && (!memberSearch || m.name.toLowerCase().includes(memberSearch.toLowerCase()))).map(m => (
+              {sortMembersBySearch(members.filter(m => !m.archived && (!memberSearch || m.name.toLowerCase().includes(memberSearch.toLowerCase()))), memberSearch).map(m => (
                 <TouchableOpacity key={m.id} onPress={() => {setActiveMemberId(m.id); setShowMemberPicker(false); setMemberSearch('');}} activeOpacity={0.7}
                   style={{flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1,
                     backgroundColor: activeMemberId === m.id ? `${m.color}20` : T.bg, borderColor: activeMemberId === m.id ? `${m.color}50` : T.border}}>
@@ -411,10 +478,16 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
         }
       />
 
-      {replyTo && (
+      {replyTo && !editingMessageId && (
         <View style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 6, backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border}}>
           <Text style={{fontSize: fs(11), color: T.dim, flex: 1}} numberOfLines={1}>↳ {getMember(replyTo.authorId)?.name}: {replyTo.content.slice(0, 40)}</Text>
           <TouchableOpacity onPress={() => setReplyTo(null)}><Text style={{fontSize: fs(12), color: T.danger}}>✕</Text></TouchableOpacity>
+        </View>
+      )}
+      {editingMessageId && (
+        <View style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 6, backgroundColor: `${T.accent}15`, borderTopWidth: 1, borderTopColor: `${T.accent}40`}}>
+          <Text style={{fontSize: fs(11), color: T.accent, flex: 1, fontWeight: '500'}} numberOfLines={1}>✎ {t('chat.editingHeader', {defaultValue: 'Editing message'})}</Text>
+          <TouchableOpacity onPress={cancelEditMessage}><Text style={{fontSize: fs(12), color: T.danger}}>{t('common.cancel')}</Text></TouchableOpacity>
         </View>
       )}
 
@@ -449,12 +522,12 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
         <TouchableOpacity onPress={() => setShowFormatBar(!showFormatBar)} activeOpacity={0.7} style={{padding: 4}}>
           <Text style={{fontSize: fs(14), fontWeight: '700', color: showFormatBar ? T.accent : T.dim}}>Aa</Text>
         </TouchableOpacity>
-        <TextInput value={input} onChangeText={setInput} placeholder={t('chat.typeMessage')} placeholderTextColor={T.muted}
-          style={{flex: 1, backgroundColor: T.bg, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, fontSize: fs(14)}}
-          onSubmitEditing={sendMessage} returnKeyType="send" />
-        <TouchableOpacity onPress={sendMessage} activeOpacity={0.7}
+        <TextInput value={input} onChangeText={setInput} placeholder={editingMessageId ? t('chat.editPlaceholder', {defaultValue: 'Edit message…'}) : t('chat.typeMessage')} placeholderTextColor={T.muted}
+          style={{flex: 1, backgroundColor: T.bg, color: T.text, borderWidth: 1, borderColor: editingMessageId ? `${T.accent}60` : T.border, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, fontSize: fs(14)}}
+          onSubmitEditing={editingMessageId ? saveEditedMessage : sendMessage} returnKeyType={editingMessageId ? 'done' : 'send'} />
+        <TouchableOpacity onPress={editingMessageId ? saveEditedMessage : sendMessage} activeOpacity={0.7}
           style={{width: 36, height: 36, borderRadius: 18, backgroundColor: input.trim() ? T.accent : T.toggleOff, alignItems: 'center', justifyContent: 'center'}}>
-          <Text style={{fontSize: fs(16), color: input.trim() ? T.bg : T.muted}}>↑</Text>
+          <Text style={{fontSize: fs(16), color: input.trim() ? T.bg : T.muted}}>{editingMessageId ? '✓' : '↑'}</Text>
         </TouchableOpacity>
       </View>
     </View>

@@ -1,24 +1,13 @@
 import React, {useState, useMemo} from 'react';
-import {View, ScrollView, TouchableOpacity, Image, StyleSheet, Alert} from 'react-native';
+import {View, ScrollView, TouchableOpacity, StyleSheet, Alert} from 'react-native';
 import {Text, TextInput} from '../components/AppText';
+import {Avatar} from '../components/Avatar';
 import {useTranslation} from 'react-i18next';
 import {Fonts} from '../theme';
 import {AccentText} from '../components/AccentText';
-import {HistoryEntry, JournalEntry, Member, FrontTierKey, fmtTime, fmtDate, fmtDur, getInitials, TIER_LABELS, translateMood} from '../utils';
+import {HistoryEntry, JournalEntry, Member, FrontTierKey, fmtTime, fmtDate, fmtDur, TIER_LABELS, translateMood, sortMembersBySearch} from '../utils';
 import {store, KEYS} from '../storage';
 import {FlashList} from '@shopify/flash-list';
-
-const Avatar = ({member, size = 26, T}: {member?: Member | null; size?: number; T: any}) => {
-  if (member?.avatar) {
-    return <Image source={{uri: member.avatar}} style={{width: size, height: size, borderRadius: size / 2}} />;
-  }
-  return (
-    <View style={{width: size, height: size, borderRadius: size / 2, backgroundColor: member?.color || T.toggleOff,
-      alignItems: 'center', justifyContent: 'center'}}>
-      <Text style={{fontSize: size * 0.35, fontWeight: '700', color: 'rgba(0,0,0,0.75)'}}>{getInitials(member?.name || '?')}</Text>
-    </View>
-  );
-};
 
 const memberInEntry = (memberId: string, entry: HistoryEntry): boolean =>
   (entry.memberIds || []).includes(memberId) ||
@@ -176,8 +165,7 @@ export const HistoryScreen = ({theme: T, history, journal, getMember, members, o
         <Text
           style={[s.heading, {color: T.text}]}
           numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.5}>
+          maxFontSizeMultiplier={1.2}>
           {t('history.title')}
         </Text>
         <View style={{flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: T.border, marginTop: 4}}>
@@ -355,7 +343,7 @@ export const HistoryScreen = ({theme: T, history, journal, getMember, members, o
                 {memberSearch.length > 0 && (
                   <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, overflow: 'hidden', marginTop: 4, maxHeight: 280}}>
                     <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={true}>
-                      {members.filter(m => m.name.toLowerCase().includes(memberSearch.toLowerCase())).map(m => (
+                      {sortMembersBySearch(members.filter(m => m.name.toLowerCase().includes(memberSearch.toLowerCase())), memberSearch).map(m => (
                         <TouchableOpacity key={m.id}
                           onPress={() => {setSelectedMemberId(m.id); setMemberSearch('');}}
                           activeOpacity={0.7}

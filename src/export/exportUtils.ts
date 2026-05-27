@@ -17,6 +17,7 @@ import {
   fmtDur,
 } from '../utils';
 import {store, KEYS, chatMsgKey} from '../storage';
+import {parallelMap} from '../utils/concurrency';
 
 export interface ExportCategories {
   system?: boolean;
@@ -33,12 +34,13 @@ export interface ExportCategories {
   customFields?: boolean;
   noteboards?: boolean;
   polls?: boolean;
+  journalTemplates?: boolean;
 }
 
 const ALL_CATEGORIES: ExportCategories = {
   system: true, members: true, avatars: true, banners: true, frontHistory: true, journal: true,
   groups: true, chat: true, moods: true, palettes: true, settings: true,
-  customFields: true, noteboards: true, polls: true,
+  customFields: true, noteboards: true, polls: true, journalTemplates: true,
 };
 
 export const buildExportPayload = async (
@@ -49,7 +51,7 @@ export const buildExportPayload = async (
   categories: ExportCategories = ALL_CATEGORIES,
 ): Promise<ExportPayload> => {
   const cat = { ...ALL_CATEGORIES, ...categories };
-  const [groups, channels, settings, front, palettes, customFieldDefs, noteboards, polls] = await Promise.all([
+  const [groups, channels, settings, front, palettes, customFieldDefs, noteboards, polls, journalTemplates] = await Promise.all([
     store.get<MemberGroup[]>(KEYS.groups),
     store.get<ChatChannel[]>(KEYS.chatChannels),
     store.get<AppSettings>(KEYS.settings),
@@ -58,53 +60,53 @@ export const buildExportPayload = async (
     store.get<any[]>(KEYS.customFieldDefs),
     store.get<any[]>(KEYS.noteboards),
     store.get<any[]>(KEYS.polls),
+    store.get<any[]>(KEYS.journalTemplates),
   ]);
 
   const chatMessages: Record<string, ChatMessage[]> = {};
   if (cat.chat && channels && channels.length > 0) {
-    for (const ch of channels) {
-      const msgs = await store.get<ChatMessage[]>(chatMsgKey(ch.id));
-      if (msgs && msgs.length > 0) chatMessages[ch.id] = msgs;
+    const fetched = await parallelMap(
+      channels,
+      async (ch) => ({id: ch.id, msgs: await store.get<ChatMessage[]>(chatMsgKey(ch.id))}),
+      6,
+    );
+    for (const entry of fetched) {
+      if (entry && entry.msgs && entry.msgs.length > 0) chatMessages[entry.id] = entry.msgs;
     }
   }
 
+  const readImageBase64 = async (uri: string, defaultMime: string): Promise<string | null> => {
+    try {
+      const filePath = uri.replace(/\?.*$/, '').replace(/^file:\/\//, '');
+      const b64 = await ReactNativeBlobUtil.fs.readFile(filePath, 'base64');
+      let mime = defaultMime;
+      if (b64.startsWith('iVBOR')) mime = 'image/png';
+      else if (b64.startsWith('R0lGO')) mime = 'image/gif';
+      else if (b64.startsWith('UklGR')) mime = 'image/webp';
+      else if (b64.startsWith('/9j/')) mime = 'image/jpeg';
+      return `data:${mime};base64,${b64}`;
+    } catch { return null; }
+  };
+
   const avatars: Record<string, string> = {};
   if (cat.avatars) {
-    for (const m of members) {
-      if (!m.avatar) continue;
-      if (m.avatar.startsWith('data:')) {
-        avatars[m.id] = m.avatar;
-      } else {
-        try {
-          const filePath = m.avatar.replace(/\?.*$/, '').replace(/^file:\/\//, '');
-          const b64 = await ReactNativeBlobUtil.fs.readFile(filePath, 'base64');
-          let mime = 'image/jpeg';
-          if (b64.startsWith('iVBOR')) mime = 'image/png';
-          else if (b64.startsWith('R0lGO')) mime = 'image/gif';
-          else if (b64.startsWith('UklGR')) mime = 'image/webp';
-          avatars[m.id] = `data:${mime};base64,${b64}`;
-        } catch {}
-      }
-    }
+    const withAvatars = members.filter(m => !!m.avatar);
+    const results = await parallelMap(withAvatars, async (m) => {
+      if (m.avatar!.startsWith('data:')) return {id: m.id, data: m.avatar!};
+      const data = await readImageBase64(m.avatar!, 'image/jpeg');
+      return data ? {id: m.id, data} : null;
+    }, 6);
+    for (const r of results) if (r) avatars[r.id] = r.data;
   }
   const banners: Record<string, string> = {};
   if (cat.banners) {
-    for (const m of members) {
-      if (!m.banner) continue;
-      if (m.banner.startsWith('data:')) {
-        banners[m.id] = m.banner;
-      } else {
-        try {
-          const filePath = m.banner.replace(/\?.*$/, '').replace(/^file:\/\//, '');
-          const b64 = await ReactNativeBlobUtil.fs.readFile(filePath, 'base64');
-          let mime = 'image/png';
-          if (b64.startsWith('/9j/')) mime = 'image/jpeg';
-          else if (b64.startsWith('R0lGO')) mime = 'image/gif';
-          else if (b64.startsWith('UklGR')) mime = 'image/webp';
-          banners[m.id] = `data:${mime};base64,${b64}`;
-        } catch {}
-      }
-    }
+    const withBanners = members.filter(m => !!m.banner);
+    const results = await parallelMap(withBanners, async (m) => {
+      if (m.banner!.startsWith('data:')) return {id: m.id, data: m.banner!};
+      const data = await readImageBase64(m.banner!, 'image/png');
+      return data ? {id: m.id, data} : null;
+    }, 6);
+    for (const r of results) if (r) banners[r.id] = r.data;
   }
   const membersForExport = members.map(({avatar: _a, banner: _b, ...rest}) => rest as Member);
 
@@ -130,6 +132,7 @@ export const buildExportPayload = async (
     customFieldDefs: cat.customFields ? (customFieldDefs || []) : [],
     noteboards: cat.noteboards ? (noteboards || []) : [],
     polls: cat.polls ? (polls || []) : [],
+    journalTemplates: cat.journalTemplates ? (journalTemplates || []) : [],
   };
 };
 

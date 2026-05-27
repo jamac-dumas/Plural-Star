@@ -3,7 +3,7 @@ import {View, ScrollView, TouchableOpacity, Alert, Linking} from 'react-native';
 import {Text, TextInput} from '../components/AppText';
 import {useTranslation} from 'react-i18next';
 import {Fonts} from '../theme';
-import {Member, HistoryEntry, FrontState, FrontTierKey, fmtTime, fmtDur, allFrontMemberIds} from '../utils';
+import {Member, HistoryEntry, FrontState, FrontTierKey, fmtTime, fmtDur, allFrontMemberIds, sortMembersBySearch} from '../utils';
 import {DateTimeEditor} from '../components/DateTimeEditor';
 import {Avatar} from '../components/Avatar';
 
@@ -34,7 +34,7 @@ const TierMemberPicker = ({tierKey, label, color, selected, setSelected, members
   const fs = (s: number) => Math.round(s * (T.textScale || 1));
   const [search, setSearch] = useState('');
   const otherTiers: Record<FrontTierKey, string> = {primary: t('tier.primaryShort'), coFront: t('tier.coFrontShort'), coConscious: t('tier.coConShort')};
-  const filtered = members.filter(m => !search || m.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = sortMembersBySearch(members.filter(m => !search || m.name.toLowerCase().includes(search.toLowerCase())), search);
   const toggle = (id: string) => {
     setSelected(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
   };
@@ -158,11 +158,11 @@ const RetroHistoryScreen = ({T, members, history, front, onSaveHistory, onSetFro
       if (deleteOverlapKeys) {
         const editKey = `${editEntry!.startTime}-${(editEntry!.memberIds || []).join(',')}`;
         const stripped = base.filter(e => `${e.startTime}-${(e.memberIds || []).join(',')}` !== editKey);
-        return [newEntry, ...stripped].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+        return [newEntry, ...stripped].sort((a, b) => b.startTime - a.startTime);
       }
-      return [newEntry, ...updated].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+      return [newEntry, ...updated].sort((a, b) => b.startTime - a.startTime);
     }
-    return [newEntry, ...base].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+    return [newEntry, ...base].sort((a, b) => b.startTime - a.startTime);
   };
 
   const handleSave = () => {
@@ -216,9 +216,9 @@ const RetroHistoryScreen = ({T, members, history, front, onSaveHistory, onSetFro
             onSetFront(newFront);
             if (isEditing) {
               const updated = closed.map((e, i) => i === editIndex ? newEntry : e);
-              onSaveHistory(updated.sort((a, b) => b.startTime - a.startTime).slice(0, 1000));
+              onSaveHistory(updated.sort((a, b) => b.startTime - a.startTime));
             } else {
-              onSaveHistory([newEntry, ...closed].slice(0, 1000));
+              onSaveHistory([newEntry, ...closed]);
             }
             onBack();
           }},
@@ -272,7 +272,7 @@ const RetroHistoryScreen = ({T, members, history, front, onSaveHistory, onSetFro
         <TouchableOpacity onPress={onBack} activeOpacity={0.7} style={{padding: 4, marginRight: 12}}>
           <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
         </TouchableOpacity>
-        <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{isEditing ? t('hub.editEntry', {defaultValue: 'Edit Entry'}) : t('hub.retroHistory')}</Text>
+        <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{isEditing ? t('hub.editEntry', {defaultValue: 'Edit Entry'}) : t('hub.retroHistory')}</Text>
       </View>
 
       <DateTimeEditor date={startDate} onChange={setStartDate} label={t('hub.startTime')} T={T} />
@@ -356,7 +356,7 @@ export const HubScreen = ({theme: T, members, history, front, onSaveHistory, onS
           <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} style={{padding: 4, marginRight: 12}}>
             <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
           </TouchableOpacity>
-          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{t('hub.importExport')}</Text>
+          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('hub.importExport')}</Text>
         </View>
         {renderShareScreen()}
       </View>
@@ -380,7 +380,7 @@ export const HubScreen = ({theme: T, members, history, front, onSaveHistory, onS
           <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} style={{padding: 4, marginRight: 12}}>
             <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
           </TouchableOpacity>
-          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{t('hub.statistics')}</Text>
+          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('hub.statistics')}</Text>
         </View>
         {renderStatsScreen()}
       </View>
@@ -394,7 +394,7 @@ export const HubScreen = ({theme: T, members, history, front, onSaveHistory, onS
           <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} style={{padding: 4, marginRight: 12}}>
             <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
           </TouchableOpacity>
-          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{t('hub.systemChat')}</Text>
+          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('hub.systemChat')}</Text>
         </View>
         {renderChatScreen()}
       </View>
@@ -408,7 +408,7 @@ export const HubScreen = ({theme: T, members, history, front, onSaveHistory, onS
           <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} style={{padding: 4, marginRight: 12}}>
             <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
           </TouchableOpacity>
-          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{t('customFields.title')}</Text>
+          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('customFields.title')}</Text>
         </View>
         {renderCustomFieldsScreen()}
       </View>
@@ -422,7 +422,7 @@ export const HubScreen = ({theme: T, members, history, front, onSaveHistory, onS
           <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} style={{padding: 4, marginRight: 12}}>
             <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
           </TouchableOpacity>
-          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{t('polls.title')}</Text>
+          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('polls.title')}</Text>
         </View>
         {renderPollsScreen()}
       </View>
@@ -432,7 +432,7 @@ export const HubScreen = ({theme: T, members, history, front, onSaveHistory, onS
   if (activeTile === 'credits') {
     const credits: {name: string; role: string; url: string}[] = [
       {name: 'The Loud House System', role: t('hub.creditLogo', {defaultValue: 'Plural Star Logo'}), url: 'https://x.com/theloudhousesys?s=21'},
-      {name: 'realcatdev', role: t('hub.creditIos', {defaultValue: 'Plural Star iOS Port'}), url: 'https://github.com/realcatdev'},
+      {name: 'sparklecatdev', role: t('hub.creditIos', {defaultValue: 'Plural Star iOS Port'}), url: 'https://github.com/sparklecatdev'},
     ];
     return (
       <View style={{flex: 1, backgroundColor: T.bg}}>
@@ -440,7 +440,7 @@ export const HubScreen = ({theme: T, members, history, front, onSaveHistory, onS
           <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} style={{padding: 4, marginRight: 12}}>
             <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
           </TouchableOpacity>
-          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{t('hub.credits', {defaultValue: 'Credits'})}</Text>
+          <Text style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('hub.credits', {defaultValue: 'Credits'})}</Text>
         </View>
         <ScrollView style={{flex: 1}} contentContainerStyle={{padding: 16, paddingBottom: 32}}>
           {credits.map((c, i) => (
@@ -486,8 +486,7 @@ export const HubScreen = ({theme: T, members, history, front, onSaveHistory, onS
       <Text
         style={{fontFamily: Fonts.display, fontSize: fs(26), fontWeight: '600', fontStyle: 'italic', color: T.text, marginBottom: 20}}
         numberOfLines={1}
-        adjustsFontSizeToFit
-        minimumFontScale={0.5}>
+        maxFontSizeMultiplier={1.2}>
         {t('hub.title')}
       </Text>
       <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 10}}>

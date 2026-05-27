@@ -14,7 +14,7 @@ import type {CustomPalette, ThemeColors} from './src/theme';
 import {AccentText} from './src/components/AccentText';
 import {store, KEYS} from './src/storage';
 import {SystemInfo, Member, MemberGroup, FrontState, FrontTier, FrontTierKey, HistoryEntry, JournalEntry, JournalTemplate, ShareSettings, AppSettings, ChatChannel, ChatMessage, NoteboardEntry, DEFAULT_CHANNELS, findOpenFrontInHistory, migrateFrontState, frontToHistoryEntry, uid} from './src/utils';
-import {migrateInlineAvatars, migrateInlineChatMedia, clearAllMedia} from './src/utils/mediaUtils';
+import {migrateInlineAvatars, migrateInlineChatMedia, clearAllMedia, migrateStaleMediaPaths, rebaseChatMessageMedia} from './src/utils/mediaUtils';
 import {showFrontNotification, clearFrontNotification, scheduleFrontCheckReminder, cancelFrontCheckReminder, showNoteboardNotification, clearNoteboardNotification} from './src/services/NotificationService';
 
 import {SetupScreen} from './src/screens/SetupScreen';
@@ -38,7 +38,7 @@ const TAB_ICONS: Record<Tab, string> = {
   front: '◈', members: '◇', hub: '⬡', journal: '◉', history: '◷',
 };
 
-const DEFAULT_SETTINGS: AppSettings = {locations: [], customMoods: [], lightMode: false, gpsEnabled: false, filesEnabled: true, language: 'en', notificationsEnabled: true, noteboardNotifications: true, activePaletteId: '__dark__', textScale: 1.0, useDyslexicFont: true};
+const DEFAULT_SETTINGS: AppSettings = {locations: [], customMoods: [], lightMode: false, gpsEnabled: false, filesEnabled: true, language: 'en', notificationsEnabled: true, noteboardNotifications: true, activePaletteId: '__dark__', textScale: 1.0, useDyslexicFont: false};
 
 const setDyslexicEnabled = (on: boolean) => {
   setAppTextDyslexicEnabled(on);
@@ -60,7 +60,7 @@ const getGPSLocation = (): Promise<string | null> =>
             const {latitude, longitude} = pos.coords;
             const res = await fetch(
               `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&zoom=10`,
-              {headers: {'User-Agent': 'PluralStar/1.7.3'}},
+              {headers: {'User-Agent': 'PluralStar/1.7.4'}},
             );
             const data = await res.json();
             const a = data.address || {};
@@ -134,8 +134,10 @@ function MainAppContent() {
         const msgs = await store.get<ChatMessage[]>(`ps:chat:${ch.id}`, []);
         if (msgs) {
           const {messages: migrated, changed} = await migrateInlineChatMedia(msgs);
-          if (changed) await store.set(`ps:chat:${ch.id}`, migrated);
-          allMsgs.push(...(changed ? migrated : msgs));
+          const {messages: rebased, changed: rebasedChanged} = rebaseChatMessageMedia(changed ? migrated : msgs);
+          const finalMsgs = rebasedChanged ? rebased : (changed ? migrated : msgs);
+          if (changed || rebasedChanged) await store.set(`ps:chat:${ch.id}`, finalMsgs);
+          allMsgs.push(...finalMsgs);
         }
       } catch (e) {
         console.error('[PS] chat load error:', ch.id, e);
@@ -161,12 +163,7 @@ function MainAppContent() {
         store.get<ChatChannel[]>(KEYS.chatChannels, []),
       ]);
       console.log(`[STARTUP] loadAll begin — sys:${!!sys} members:${(mem||[]).length} groups:${(grps||[]).length} journal:${(jour||[]).length} history:${(hist||[]).length} channels:${(savedChannels||[]).length}`);
-      if (!sys) {
-        console.warn('[STARTUP] No system info loaded — entering first-run state. If this is unexpected, check for AsyncStorage failures above.');
-        setFirstRun(true);
-      } else {
-        setSystem(sys);
-      }
+      let loadedSystem = sys;
       let loadedMembers = mem || [];
       try {
         const {members: migratedMembers, changed: avatarsChanged} = await migrateInlineAvatars(loadedMembers);
@@ -176,6 +173,24 @@ function MainAppContent() {
         }
       } catch (e) {
         console.error('[PS] avatar migration error:', e);
+      }
+      try {
+        const {members: rebasedMembers, system: rebasedSystem, changed: pathsChanged} = await migrateStaleMediaPaths(loadedMembers, loadedSystem);
+        if (pathsChanged) {
+          loadedMembers = rebasedMembers;
+          loadedSystem = rebasedSystem;
+          await store.set(KEYS.members, loadedMembers);
+          if (rebasedSystem) await store.set(KEYS.system, rebasedSystem);
+          console.log('[STARTUP] rebased stale Documents:// media paths');
+        }
+      } catch (e) {
+        console.error('[PS] media path rebase error:', e);
+      }
+      if (!loadedSystem) {
+        console.warn('[STARTUP] No system info loaded — entering first-run state. If this is unexpected, check for AsyncStorage failures above.');
+        setFirstRun(true);
+      } else {
+        setSystem(loadedSystem);
       }
       setMembers(loadedMembers);
       const migratedFront = migrateFrontState(fr) || findOpenFrontInHistory(hist || []);
@@ -441,7 +456,7 @@ function MainAppContent() {
 
     if (nf) {
       const frontEntry = frontToHistoryEntry(nf, null, 'front');
-      newHistory = [frontEntry, ...newHistory].slice(0, 1000);
+      newHistory = [frontEntry, ...newHistory];
     }
 
     setFront(nf);
@@ -503,7 +518,7 @@ function MainAppContent() {
     const noteChanged = note !== undefined && (note || undefined) !== (tierData.note || undefined);
     if (moodChanged || locChanged) { const entry = frontToHistoryEntry(updated, null, moodChanged ? 'mood' : 'location', tier); entry.changeTime = now; extras.push(entry); }
     if (noteChanged) { const entry = frontToHistoryEntry(updated, null, 'note', tier); entry.changeTime = now + 1; extras.push(entry); }
-    if (extras.length > 0) await saveHistory([...extras, ...history].slice(0, 1000));
+    if (extras.length > 0) await saveHistory([...extras, ...history]);
   };
 
   const saveMember = async (m: Member) => {
@@ -632,17 +647,21 @@ function MainAppContent() {
       <StatusBar barStyle={C.isLight ? 'dark-content' : 'light-content'} backgroundColor={C.bg} translucent={false} />
       <View style={{backgroundColor: C.bg, paddingTop: Platform.OS === 'ios' ? Math.max(insets.top - 6, 0) : Math.max(StatusBar.currentHeight || 0, insets.top || 0, 28)}}>
         <View style={[styles.header, {borderBottomColor: C.border, backgroundColor: C.bg}]}>
-          <AccentText T={C} style={[styles.headerTitle, {color: C.accent}]}>{system.name}</AccentText>
+          <AccentText
+            T={C}
+            style={[styles.headerTitle, {color: C.accent, flex: 1, marginRight: 8}]}
+            numberOfLines={1}
+            maxFontSizeMultiplier={1.2}>{system.name}</AccentText>
           <View style={styles.headerRight}>
             <TouchableOpacity
               onPress={() => { if (appSettings.appLockPassword) setLocked(true); }}
               disabled={!appSettings.appLockPassword}
               activeOpacity={appSettings.appLockPassword ? 0.7 : 1}
               style={styles.settingsBtn}>
-              <Text style={[styles.settingsIcon, {color: appSettings.appLockPassword ? C.dim : C.muted, opacity: appSettings.appLockPassword ? 1 : 0.35}]}>🔒</Text>
+              <Text style={[styles.settingsIcon, {color: appSettings.appLockPassword ? C.dim : C.muted, opacity: appSettings.appLockPassword ? 1 : 0.35}]} maxFontSizeMultiplier={1.2} allowFontScaling={false}>🔒</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowSystem(true)} activeOpacity={0.7} style={styles.settingsBtn}>
-              <Text style={[styles.settingsIcon, {color: C.dim}]}>⚙</Text>
+              <Text style={[styles.settingsIcon, {color: C.dim}]} maxFontSizeMultiplier={1.2} allowFontScaling={false}>⚙</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -651,8 +670,8 @@ function MainAppContent() {
       <View style={[styles.tabBar, {backgroundColor: C.surface, borderTopColor: C.border}]}>
         {TAB_IDS.map(id => (
           <TouchableOpacity key={id} onPress={() => { if (id === 'hub' && tab === 'hub') setHubResetKey(k => k + 1); setTab(id); }} activeOpacity={0.7} style={[styles.tabBtn, {paddingBottom: 8 + (insets.bottom || 0)}]}>
-            <AccentText T={C} style={[styles.tabIcon, {color: tab === id ? C.accent : C.dim, fontSize: fs(18)}]}>{TAB_ICONS[id]}</AccentText>
-            <AccentText T={C} style={[styles.tabLabel, {color: tab === id ? C.accent : C.dim, fontSize: fs(9)}]}>{t(`tabs.${id}`)}</AccentText>
+            <AccentText T={C} style={[styles.tabIcon, {color: tab === id ? C.accent : C.dim, fontSize: fs(18)}]} maxFontSizeMultiplier={1.2}>{TAB_ICONS[id]}</AccentText>
+            <AccentText T={C} style={[styles.tabLabel, {color: tab === id ? C.accent : C.dim, fontSize: fs(9)}]} numberOfLines={1} allowFontScaling={false}>{t(`tabs.${id}`)}</AccentText>
           </TouchableOpacity>
         ))}
       </View>
@@ -741,7 +760,7 @@ const styles = StyleSheet.create({
   splashName: {fontFamily: 'OpenDyslexic', fontSize: 22, fontStyle: 'italic', letterSpacing: 2, marginTop: 16},
   header: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1},
   headerTitle: {fontFamily: 'OpenDyslexic', fontSize: 20, fontWeight: '600', fontStyle: 'italic', letterSpacing: 0.3},
-  headerRight: {flexDirection: 'row', alignItems: 'center'},
+  headerRight: {flexDirection: 'row', alignItems: 'center', flexShrink: 0},
   settingsBtn: {padding: 4, marginLeft: 8},
   settingsIcon: {fontSize: 18},
   content: {flex: 1},

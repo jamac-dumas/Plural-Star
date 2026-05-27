@@ -249,3 +249,39 @@ export const clearNoteboardNotification = async () => {
     console.error('[PluralSpace] Noteboard notification clear error:', e);
   }
 };
+
+export const showChatPingNotification = async (
+  channelName: string,
+  speakerName: string,
+  preview: string,
+) => {
+  try {
+    if (Platform.OS !== 'android') return;
+    await setupReminderChannel();
+    const safePreview = (preview || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+    const title = i18n.t('notification.chatPingTitle', {
+      speaker: speakerName,
+      channel: channelName,
+      defaultValue: `◆ ${speakerName} pinged you in #${channelName}`,
+    });
+    const body = safePreview
+      ? i18n.t('notification.chatPingBody', {preview: safePreview, defaultValue: safePreview})
+      : i18n.t('notification.chatPingBodyEmpty', {defaultValue: 'Tap to view the message.'});
+    await notifee.displayNotification({
+      id: `ps-chat-ping-${Date.now()}`,
+      title,
+      body,
+      android: {
+        channelId: REMINDER_CHANNEL_ID,
+        smallIcon: 'ic_stat_notification',
+        importance: AndroidImportance.DEFAULT,
+        visibility: AndroidVisibility.PUBLIC,
+        pressAction: {id: 'default'},
+        color: '#DAA520',
+        style: safePreview ? {type: AndroidStyle.BIGTEXT, text: safePreview} : undefined,
+      },
+    });
+  } catch (e) {
+    console.error('[PluralSpace] Chat ping notification error:', e);
+  }
+};

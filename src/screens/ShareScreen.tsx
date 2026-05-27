@@ -12,6 +12,7 @@ type Section = 'export' | 'import' | 'shareview';
 type ImportSource = 'backup' | 'journal' | 'simplyplural' | 'pluralkit' | 'spfile';
 
 import {saveAvatarFromUrl, saveAvatar, saveBannerFromBase64, saveBannerFromUrl, migrateInlineChatMedia} from '../utils/mediaUtils';
+import {parallelMap} from '../utils/concurrency';
 
 interface Props {
   theme: any; system: SystemInfo; members: Member[]; front: FrontState | null;
@@ -28,7 +29,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [restoreFile, setRestoreFile] = useState<string | null>(null);
   const [restorePath, setRestorePath] = useState<string | null>(null);
   const [restorePreview, setRestorePreview] = useState<boolean>(false);
-  const [restoreSel, setRestoreSel] = useState({system: true, members: true, avatars: true, banners: true, journal: true, frontHistory: true, groups: true, chat: true, moods: true, palettes: true, settings: true, customFields: true, noteboards: true, polls: true});
+  const [restoreSel, setRestoreSel] = useState({system: true, members: true, avatars: true, banners: true, journal: true, frontHistory: true, groups: true, chat: true, moods: true, palettes: true, settings: true, customFields: true, noteboards: true, polls: true, journalTemplates: true});
   const [restoreError, setRestoreError] = useState('');
   const [restoreDone, setRestoreDone] = useState(false);
   const [recoverEntries, setRecoverEntries] = useState<RecoverableEntry[] | null>(null);
@@ -36,6 +37,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [recoverSel, setRecoverSel] = useState<Record<string, boolean>>({});
   const [recoverDone, setRecoverDone] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<string>('');
   const [importStatus, setImportStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [importMsg, setImportMsg] = useState('');
   const [importSource, setImportSource] = useState<ImportSource>('backup');
@@ -55,7 +57,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [exportSel, setExportSel] = useState<ExportCategories>({
     system: true, members: true, avatars: true, banners: true, frontHistory: true, journal: true,
     groups: true, chat: true, moods: true, palettes: true, settings: true,
-    customFields: true, noteboards: true, polls: true,
+    customFields: true, noteboards: true, polls: true, journalTemplates: true,
   });
   const togExp = (k: keyof ExportCategories) => setExportSel(s => ({...s, [k]: !s[k]}));
 
@@ -171,6 +173,35 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             if (restoreSel.members) await store.set(KEYS.members, newMembers);
             const idMap: Record<string, string> = {};
             rawData.members.forEach((sp: any, i: number) => { const sid = normId(sp._id); if (sid) idMap[sid] = newMembers[i].id; });
+            if (restoreSel.members && restoreSel.avatars) {
+              const spAvatarUrls: Record<string, string> = {};
+              rawData.members.forEach((sp: any, i: number) => {
+                const localId = newMembers[i].id;
+                const directUrl = String(sp.avatarUrl || '');
+                if (directUrl.startsWith('http://') || directUrl.startsWith('https://')) {
+                  spAvatarUrls[localId] = directUrl;
+                  return;
+                }
+                const avatarUuid = String(sp.avatarUuid || '');
+                const ownerUid = String(sp.uid || '');
+                if (avatarUuid && ownerUid) {
+                  spAvatarUrls[localId] = `https://spaces.apparyllis.com/avatars/${ownerUid}/${avatarUuid}`;
+                }
+              });
+              const spAvatarEntries = Object.entries(spAvatarUrls);
+              if (spAvatarEntries.length > 0) {
+                setRestoreProgress(t('share.progressAvatarsDownload', {defaultValue: 'Downloading avatars…'}));
+                const downloaded: Record<string, string> = {};
+                await parallelMap(spAvatarEntries, async ([memberId, url]) => {
+                  const fileUri = await saveAvatarFromUrl(memberId, url).catch(() => undefined);
+                  if (fileUri) downloaded[memberId] = fileUri;
+                }, 4, (done, total) => setRestoreProgress(t('share.progressAvatarsDownloadN', {done, total, defaultValue: `Downloading avatars… ${done}/${total}`})));
+                if (Object.keys(downloaded).length > 0) {
+                  const withAvatars = newMembers.map(m => downloaded[m.id] ? {...m, avatar: downloaded[m.id]} : m);
+                  await store.set(KEYS.members, withAvatars);
+                }
+              }
+            }
             if (restoreSel.customFields && rawData.customFields.length > 0) {
               const existingDefs = await store.get<CustomFieldDef[]>(KEYS.customFieldDefs, []) || [];
               const fieldIdMap: Record<string, string> = {};
@@ -219,7 +250,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               const sp_switches = rawData.frontHistory.map((s: any) => ({id: normId(s._id), content: s}));
               const newH = convertSPSwitches(sp_switches, idMap);
               if (newH.length > 0) {
-                const merged = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+                const merged = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
                 await store.set(KEYS.history, merged);
                 const importedOpenFront = findOpenFrontInHistory(merged);
                 if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -238,56 +269,82 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           }
           if (restoreSel.system && data.system) await store.set(KEYS.system, data.system);
           if (restoreSel.members && data.members) {
-            await store.set(KEYS.members, data.members);
-            if (restoreSel.avatars && data.avatars && Object.keys(data.avatars).length > 0) {
-              const withAvatars: any[] = [...data.members];
-              let changed = false;
-              for (let i = 0; i < withAvatars.length; i++) {
-                const memberId = withAvatars[i].id;
-                const raw = data.avatars[memberId];
-                if (!raw) continue;
-                delete data.avatars[memberId];
-                try {
-                  const b64 = raw.startsWith('data:') ? raw.split(',')[1] : raw;
-                  const fileUri = await saveAvatar(memberId, b64).catch(() => null);
-                  if (fileUri) { withAvatars[i] = {...withAvatars[i], avatar: fileUri}; changed = true; }
-                } catch {}
-              }
-              if (changed) await store.set(KEYS.members, withAvatars);
+            let membersAccum: any[] = [...data.members];
+            const wantAvatars = restoreSel.avatars && data.avatars && Object.keys(data.avatars).length > 0;
+            const wantBanners = restoreSel.banners && data.banners && Object.keys(data.banners).length > 0;
+            if (wantAvatars) {
+              setRestoreProgress(t('share.progressAvatars', {defaultValue: 'Restoring avatars…'}));
+              const entries = Object.entries(data.avatars!);
+              const avatarMap: Record<string, string> = {};
+              await parallelMap(entries, async ([memberId, raw]) => {
+                if (!raw) return;
+                const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
+                const fileUri = await saveAvatar(memberId, b64).catch(() => null);
+                if (fileUri) avatarMap[memberId] = fileUri;
+              }, 6, (done, total) => setRestoreProgress(t('share.progressAvatarsN', {done, total, defaultValue: `Restoring avatars… ${done}/${total}`})));
+              membersAccum = membersAccum.map(m => avatarMap[m.id] ? {...m, avatar: avatarMap[m.id]} : m);
+              data.avatars = {};
             }
+            if (wantBanners) {
+              setRestoreProgress(t('share.progressBanners', {defaultValue: 'Restoring banners…'}));
+              const entries = Object.entries(data.banners!);
+              const bannerMap: Record<string, string> = {};
+              await parallelMap(entries, async ([memberId, raw]) => {
+                if (!raw) return;
+                const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
+                const fileUri = await saveBannerFromBase64(memberId, b64).catch(() => null);
+                if (fileUri) bannerMap[memberId] = fileUri;
+              }, 6, (done, total) => setRestoreProgress(t('share.progressBannersN', {done, total, defaultValue: `Restoring banners… ${done}/${total}`})));
+              membersAccum = membersAccum.map(m => bannerMap[m.id] ? {...m, banner: bannerMap[m.id]} : m);
+              data.banners = {};
+            }
+            setRestoreProgress(t('share.progressSavingMembers', {defaultValue: 'Saving members…'}));
+            await store.set(KEYS.members, membersAccum);
           } else if (restoreSel.avatars && !restoreSel.members) {
             if (data.avatars && Object.keys(data.avatars).length > 0) {
+              setRestoreProgress(t('share.progressAvatars', {defaultValue: 'Restoring avatars…'}));
               const existing = await store.get<Member[]>(KEYS.members) || [];
-              const updated: Member[] = [];
-              for (const m of existing) {
-                const raw = data.avatars[m.id];
-                if (!raw) { updated.push(m); continue; }
-                delete data.avatars[m.id];
-                try {
-                  const b64 = raw.startsWith('data:') ? raw.split(',')[1] : raw;
-                  const fileUri = await saveAvatar(m.id, b64).catch(() => null);
-                  updated.push(fileUri ? {...m, avatar: fileUri} : m);
-                } catch { updated.push(m); }
-              }
+              const avatarMap: Record<string, string> = {};
+              const entries = Object.entries(data.avatars);
+              await parallelMap(entries, async ([memberId, raw]) => {
+                if (!raw) return;
+                const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
+                const fileUri = await saveAvatar(memberId, b64).catch(() => null);
+                if (fileUri) avatarMap[memberId] = fileUri;
+              }, 6, (done, total) => setRestoreProgress(t('share.progressAvatarsN', {done, total, defaultValue: `Restoring avatars… ${done}/${total}`})));
+              const updated = existing.map(m => avatarMap[m.id] ? {...m, avatar: avatarMap[m.id]} : m);
               await store.set(KEYS.members, updated);
+              data.avatars = {};
             }
-          }
-          if (restoreSel.banners && data.banners && Object.keys(data.banners).length > 0) {
-            const currentMembers = await store.get<Member[]>(KEYS.members) || [];
-            const withBanners: Member[] = [...currentMembers];
-            let changed = false;
-            for (let i = 0; i < withBanners.length; i++) {
-              const memberId = withBanners[i].id;
-              const raw = data.banners[memberId];
-              if (!raw) continue;
-              delete data.banners[memberId];
-              try {
-                const b64 = raw.startsWith('data:') ? raw.split(',')[1] : raw;
+            if (restoreSel.banners && data.banners && Object.keys(data.banners).length > 0) {
+              setRestoreProgress(t('share.progressBanners', {defaultValue: 'Restoring banners…'}));
+              const current = await store.get<Member[]>(KEYS.members) || [];
+              const bannerMap: Record<string, string> = {};
+              const entries = Object.entries(data.banners);
+              await parallelMap(entries, async ([memberId, raw]) => {
+                if (!raw) return;
+                const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
                 const fileUri = await saveBannerFromBase64(memberId, b64).catch(() => null);
-                if (fileUri) { withBanners[i] = {...withBanners[i], banner: fileUri}; changed = true; }
-              } catch {}
+                if (fileUri) bannerMap[memberId] = fileUri;
+              }, 6, (done, total) => setRestoreProgress(t('share.progressBannersN', {done, total, defaultValue: `Restoring banners… ${done}/${total}`})));
+              const updated = current.map(m => bannerMap[m.id] ? {...m, banner: bannerMap[m.id]} : m);
+              await store.set(KEYS.members, updated);
+              data.banners = {};
             }
-            if (changed) await store.set(KEYS.members, withBanners);
+          } else if (restoreSel.banners && data.banners && Object.keys(data.banners).length > 0) {
+            setRestoreProgress(t('share.progressBanners', {defaultValue: 'Restoring banners…'}));
+            const current = await store.get<Member[]>(KEYS.members) || [];
+            const bannerMap: Record<string, string> = {};
+            const entries = Object.entries(data.banners);
+            await parallelMap(entries, async ([memberId, raw]) => {
+              if (!raw) return;
+              const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
+              const fileUri = await saveBannerFromBase64(memberId, b64).catch(() => null);
+              if (fileUri) bannerMap[memberId] = fileUri;
+            }, 6, (done, total) => setRestoreProgress(t('share.progressBannersN', {done, total, defaultValue: `Restoring banners… ${done}/${total}`})));
+            const updated = current.map(m => bannerMap[m.id] ? {...m, banner: bannerMap[m.id]} : m);
+            await store.set(KEYS.members, updated);
+            data.banners = {};
           }
           if (restoreSel.journal && data.journal) await store.set(KEYS.journal, data.journal);
           if (restoreSel.frontHistory && data.frontHistory) {
@@ -297,22 +354,21 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (restoreSel.chat) {
             if (data.chatChannels) await store.set(KEYS.chatChannels, data.chatChannels);
             if (data.chatMessages) {
-              const channelIds = Object.keys(data.chatMessages);
-              for (const chId of channelIds) {
+              setRestoreProgress(t('share.progressChat', {defaultValue: 'Restoring chat…'}));
+              const channelIds = Object.keys(data.chatMessages).filter(id => {
+                const msgs = data.chatMessages![id];
+                return Array.isArray(msgs) && msgs.length > 0;
+              });
+              await parallelMap(channelIds, async (chId) => {
                 try {
-                  const msgs = data.chatMessages[chId];
-                  if (!Array.isArray(msgs) || msgs.length === 0) {
-                    delete data.chatMessages[chId];
-                    continue;
-                  }
+                  const msgs = data.chatMessages![chId];
                   const {messages: migrated} = await migrateInlineChatMedia(msgs);
                   await store.set(chatMsgKey(chId), migrated);
-                  delete data.chatMessages[chId];
                 } catch (chErr) {
                   console.error(`[RESTORE] failed channel ${chId}:`, chErr);
-                  delete data.chatMessages[chId];
                 }
-              }
+              }, 4, (done, total) => setRestoreProgress(t('share.progressChatN', {done, total, defaultValue: `Restoring chat… ${done}/${total}`})));
+              data.chatMessages = {};
             }
           }
           if (restoreSel.settings || restoreSel.moods) {
@@ -332,11 +388,13 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (restoreSel.customFields && data.customFieldDefs) await store.set(KEYS.customFieldDefs, data.customFieldDefs);
           if (restoreSel.noteboards && data.noteboards) await store.set(KEYS.noteboards, data.noteboards);
           if (restoreSel.polls && data.polls) await store.set(KEYS.polls, data.polls);
+          if (restoreSel.journalTemplates && data.journalTemplates) await store.set(KEYS.journalTemplates, data.journalTemplates);
           setRestoreDone(true); setTimeout(() => onDataImported(), 800);
         } catch (e: any) {
           setRestoreError(e.message || 'Restore failed');
         } finally {
           setRestoring(false);
+          setRestoreProgress('');
           try {
             const safeTempPath = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/ps_restore_pending.json`;
             const exists = await ReactNativeBlobUtil.fs.exists(safeTempPath);
@@ -385,7 +443,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
     if (!extToken.trim()) {Alert.alert(t('share.tokenRequired'), t('share.pkTokenRequiredMsg')); return;}
     setExtLoading(true); setExtPreview(null);
     try {
-      const headers = {Authorization: extToken.trim(), 'Content-Type': 'application/json', 'User-Agent': 'PluralStar/1.7.3'};
+      const headers = {Authorization: extToken.trim(), 'Content-Type': 'application/json', 'User-Agent': 'PluralStar/1.7.4'};
       const [sRes, mRes, swRes, gRes] = await Promise.all([
         fetch('https://api.pluralkit.me/v2/systems/@me', {headers}),
         fetch('https://api.pluralkit.me/v2/systems/@me/members', {headers}),
@@ -510,23 +568,23 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           await store.set(KEYS.members, merged);
           const avatarUrls: Record<string, string> = {};
           if (extSel.avatars) {
+            const isHttpUrl = (s: any): boolean =>
+              typeof s === 'string' && (s.startsWith('http://') || s.startsWith('https://'));
             extPreview.members.forEach((m: any) => {
               const extId: string = isPK ? (m.uuid || m.id) : m._id || m.id;
               const localId = extId ? idMap[extId] : undefined;
               if (!localId) return;
               let avatarUrl = '';
               if (isPK) {
-                avatarUrl = m.avatar_url || '';
+                if (isHttpUrl(m.avatar_url)) avatarUrl = m.avatar_url;
               } else {
-                if (m.content?.avatarUrl) {
-                  avatarUrl = m.content.avatarUrl;
-                } else if (m.content?.avatarUuid) {
-                  const ownerUid = m.content?.uid || m.uid;
-                  avatarUrl = ownerUid
-                    ? `https://spaces.apparyllis.com/avatars/${ownerUid}/${m.content.avatarUuid}`
-                    : `https://spaces.apparyllis.com/avatars/${m.content.avatarUuid}`;
-                } else if (m.avatarUrl) {
-                  avatarUrl = m.avatarUrl;
+                const direct = m.content?.avatarUrl || m.avatarUrl;
+                const avatarUuid = m.content?.avatarUuid || m.avatarUuid;
+                const ownerUid = m.content?.uid || m.uid;
+                if (isHttpUrl(direct)) {
+                  avatarUrl = direct;
+                } else if (avatarUuid && ownerUid) {
+                  avatarUrl = `https://spaces.apparyllis.com/avatars/${ownerUid}/${avatarUuid}`;
                 }
               }
               if (avatarUrl) avatarUrls[localId] = avatarUrl;
@@ -534,14 +592,13 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           }
           const avatarEntries = Object.entries(avatarUrls);
           if (avatarEntries.length > 0) {
-            const withAvatars = [...merged];
-            for (const [memberId, url] of avatarEntries) {
-              const avatar = await saveAvatarFromUrl(memberId, url);
-              if (avatar) {
-                const idx = withAvatars.findIndex(m => m.id === memberId);
-                if (idx >= 0) withAvatars[idx] = {...withAvatars[idx], avatar};
-              }
-            }
+            setRestoreProgress(t('share.progressAvatarsDownload', {defaultValue: 'Downloading avatars…'}));
+            const avatarResults: Record<string, string> = {};
+            await parallelMap(avatarEntries, async ([memberId, url]) => {
+              const avatar = await saveAvatarFromUrl(memberId, url).catch(() => undefined);
+              if (avatar) avatarResults[memberId] = avatar;
+            }, 4, (done, total) => setRestoreProgress(t('share.progressAvatarsDownloadN', {done, total, defaultValue: `Downloading avatars… ${done}/${total}`})));
+            const withAvatars = merged.map(m => avatarResults[m.id] ? {...m, avatar: avatarResults[m.id]} : m);
             await store.set(KEYS.members, withAvatars);
           }
           if (isPK && extSel.banners) {
@@ -555,17 +612,17 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             });
             const bannerEntries = Object.entries(bannerUrls);
             if (bannerEntries.length > 0) {
-              const currentMembers = await store.get<Member[]>(KEYS.members) || [];
-              const withBanners = [...currentMembers];
-              let changed = false;
-              for (const [memberId, url] of bannerEntries) {
-                const banner = await saveBannerFromUrl(memberId, url);
-                if (banner) {
-                  const idx = withBanners.findIndex(m => m.id === memberId);
-                  if (idx >= 0) { withBanners[idx] = {...withBanners[idx], banner}; changed = true; }
-                }
+              setRestoreProgress(t('share.progressBannersDownload', {defaultValue: 'Downloading banners…'}));
+              const bannerResults: Record<string, string> = {};
+              await parallelMap(bannerEntries, async ([memberId, url]) => {
+                const banner = await saveBannerFromUrl(memberId, url).catch(() => undefined);
+                if (banner) bannerResults[memberId] = banner;
+              }, 4, (done, total) => setRestoreProgress(t('share.progressBannersDownloadN', {done, total, defaultValue: `Downloading banners… ${done}/${total}`})));
+              if (Object.keys(bannerResults).length > 0) {
+                const currentMembers = await store.get<Member[]>(KEYS.members) || [];
+                const withBanners = currentMembers.map(m => bannerResults[m.id] ? {...m, banner: bannerResults[m.id]} : m);
+                await store.set(KEYS.members, withBanners);
               }
-              if (changed) await store.set(KEYS.members, withBanners);
             }
           }
           if (!isPK && extSel.customFields && extPreview.customFields && extPreview.customFields.length > 0) {
@@ -736,7 +793,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (extSel.frontHistory && extPreview.switches.length > 0) {
             const newH = isPK ? convertPKSwitches(extPreview.switches, idMap) : convertSPSwitches(extPreview.switches, idMap);
             if (newH.length > 0) {
-              const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+              const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
               await store.set(KEYS.history, mergedHistory);
               const importedOpenFront = findOpenFrontInHistory(mergedHistory);
               if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -762,7 +819,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           });
           const newH = isPK ? convertPKSwitches(extPreview.switches, existingIdMap) : convertSPSwitches(extPreview.switches, existingIdMap);
           if (newH.length > 0) {
-            const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+            const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
             await store.set(KEYS.history, mergedHistory);
             const importedOpenFront = findOpenFrontInHistory(mergedHistory);
             if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -944,7 +1001,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (extSel.frontHistory && spHistory.length > 0) {
             const newH = convertSPSwitches(spHistory.map((sh: any) => ({content: sh, ...sh})), idMap);
             if (newH.length > 0) {
-              const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+              const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
               await store.set(KEYS.history, mergedHistory);
               const importedOpenFront = findOpenFrontInHistory(mergedHistory);
               if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -1139,6 +1196,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               ['customFields', t('customFields.title')],
               ['noteboards', t('noteboard.title')],
               ['polls', t('polls.title')],
+              ['journalTemplates', t('journal.templatesTab', {defaultValue: 'Templates'})],
             ] as [keyof ExportCategories, string][]).map(([k, label]) => (
               <SectionRow key={k} label={label} value={!!exportSel[k]} onToggle={() => togExp(k)} />
             ))}
@@ -1226,12 +1284,13 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                       ['customFields', t('customFields.title')],
                       ['noteboards', t('noteboard.title')],
                       ['polls', t('polls.title')],
+                      ['journalTemplates', t('journal.templatesTab', {defaultValue: 'Templates'})],
                     ] as any[]).map(([k, label]) => (
                       <SectionRow key={k} label={label} value={restoreSel[k as keyof typeof restoreSel]} onToggle={() => togR(k)} />
                     ))}
                   </View>
                   {restoreDone ? <View style={{backgroundColor: T.successBg, borderWidth: 1, borderColor: `${T.success}30`, borderRadius: 8, padding: 12, alignItems: 'center'}}><Text style={{fontSize: fs(13), color: T.success, fontWeight: '500'}}>{t('share.restoreComplete')}</Text></View>
-                    : restoring ? <View style={{alignItems: 'center', paddingVertical: 16}}><ActivityIndicator color={T.accent} /><Text style={{fontSize: fs(12), color: T.dim, marginTop: 8}}>{t('share.importing')}</Text></View>
+                    : restoring ? <View style={{alignItems: 'center', paddingVertical: 16}}><ActivityIndicator color={T.accent} /><Text style={{fontSize: fs(12), color: T.dim, marginTop: 8}} numberOfLines={2}>{restoreProgress || t('share.importing')}</Text></View>
                     : <TouchableOpacity onPress={handleRestore} activeOpacity={0.7} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.dangerBg, borderColor: `${T.danger}40`}}><Text style={{fontSize: fs(14), fontWeight: '500', color: T.danger}}>{t('share.restoreSelectedData')}</Text></TouchableOpacity>}
                 </>
               )}

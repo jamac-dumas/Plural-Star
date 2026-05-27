@@ -3,10 +3,10 @@ import {
   View,
   ScrollView,
   TouchableOpacity,
-  Image,
   StyleSheet,
 } from 'react-native';
 import {Text} from '../components/AppText';
+import {Avatar} from '../components/Avatar';
 import {useTranslation} from 'react-i18next';
 import {Fonts} from '../theme';
 import {
@@ -16,62 +16,8 @@ import {
   Member,
   fmtTime,
   fmtDur,
-  getInitials,
   isFrontEmpty,
 } from '../utils';
-
-const Avatar = ({
-  member,
-  size = 40,
-  pulse = false,
-  T,
-}: {
-  member?: Member | null;
-  size?: number;
-  pulse?: boolean;
-  T: any;
-}) => {
-  if (member?.avatar) {
-    return (
-      <View
-        style={{
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          shadowColor: pulse ? member.color : 'transparent',
-          shadowOpacity: pulse ? 0.5 : 0,
-          shadowRadius: pulse ? 8 : 0,
-          elevation: pulse ? 4 : 0,
-        }}>
-        <Image
-          source={{uri: member.avatar}}
-          style={{width: size, height: size, borderRadius: size / 2}}
-        />
-      </View>
-    );
-  }
-
-  return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        backgroundColor: member?.color || T.toggleOff,
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}>
-      <Text
-        style={{
-          fontSize: size * 0.35,
-          fontWeight: '700',
-          color: 'rgba(0,0,0,0.75)',
-        }}>
-        {getInitials(member?.name || '?')}
-      </Text>
-    </View>
-  );
-};
 
 interface Props {
   theme: any;
@@ -194,7 +140,9 @@ const TierCard = ({
             <Text style={{fontSize: fs(9), letterSpacing: 1, color: T.dim}}>
               {t('front.frontNote')}
             </Text>
-            <Text style={{fontSize: fs(12), color: T.accent}}>✎</Text>
+            <View style={{paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}>
+              <Text style={{fontSize: fs(11), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('common.edit', {defaultValue: 'Edit'})}</Text>
+            </View>
           </View>
           <Text style={{fontSize: fs(12), color: note ? T.text : T.muted, marginTop: 4}}>
             {note || t('front.noNote')}
@@ -230,8 +178,7 @@ export const FrontScreen = ({
           <Text
             style={[s.heading, {color: T.text, flex: 1, marginRight: 8}]}
             numberOfLines={1}
-            adjustsFontSizeToFit
-            minimumFontScale={0.5}>
+            maxFontSizeMultiplier={1.2}>
             {t('front.currentlyFronting')}
           </Text>
 
@@ -239,11 +186,12 @@ export const FrontScreen = ({
             onPress={onSetFront}
             style={[
               s.btn,
-              {backgroundColor: T.accentBg, borderColor: `${T.accent}40`},
+              {backgroundColor: T.accentBg, borderColor: `${T.accent}40`, flexShrink: 1, maxWidth: '45%'},
             ]}>
             <Text
               style={[s.btnText, {color: T.accent}]}
-              numberOfLines={1}>
+              numberOfLines={1}
+              maxFontSizeMultiplier={1.2}>
               {t('front.update')}
             </Text>
           </TouchableOpacity>

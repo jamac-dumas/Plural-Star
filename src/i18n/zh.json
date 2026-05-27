@@ -56,7 +56,7 @@
     "addMood": "+ 添加情绪",
     "frontNote": "备注",
     "whatHappening": "现在发生了什么？",
-    "noNote": "没有备注。点击 ✎ 添加。",
+    "noNote": "没有备注。点击编辑添加。",
     "clearFront": "清空 Front",
     "clearFrontTitle": "清空 Front？",
     "clearFrontMsg": "这将清除所有层级并记录当前会话的结束。继续吗？"
