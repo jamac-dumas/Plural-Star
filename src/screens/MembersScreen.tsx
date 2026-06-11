@@ -116,6 +116,7 @@ const MemberCard = React.memo(function MemberCard({
 interface Props {
   theme: any; members: Member[]; front: FrontState | null; groups: MemberGroup[];
   initialSortMode?: MemberSortMode;
+  archiveOnly?: boolean;
   onAdd: () => void;
   onAddCustomFront?: () => void;
   onEdit: (member: Member) => void;
@@ -129,10 +130,10 @@ interface Props {
   onBulkAddGroups?: (ids: string[], groupIds: string[]) => void | Promise<void>;
 }
 
-export const MembersScreen = ({theme: T, members, front, groups, initialSortMode, onAdd, onAddCustomFront, onEdit, onView, onSaveGroups, onSaveSortMode, onReorderMember, onBulkArchive, onBulkRestore, onBulkDelete, onBulkAddGroups}: Props) => {
+export const MembersScreen = ({theme: T, members, front, groups, initialSortMode, archiveOnly = false, onAdd, onAddCustomFront, onEdit, onView, onSaveGroups, onSaveSortMode, onReorderMember, onBulkArchive, onBulkRestore, onBulkDelete, onBulkAddGroups}: Props) => {
   const {t} = useTranslation();
   const fs = useCallback((s: number) => Math.round(s * (T.textScale || 1)), [T.textScale]);
-  const [memberTab, setMemberTab] = useState<'active' | 'archived' | 'customFronts'>('active');
+  const [memberTab, setMemberTab] = useState<'active' | 'archived' | 'customFronts'>(archiveOnly ? 'archived' : 'active');
   const [query, setQuery] = useState('');
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
@@ -316,13 +317,15 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
         </View>
       ) : (
         <View style={{marginBottom: 14}}>
-          <Text
-            accessibilityRole="header"
-            style={[s.heading, {color: T.text}]}
-            numberOfLines={1}
-            maxFontSizeMultiplier={1.2}>
-            {t('members.title')}
-          </Text>
+          {!archiveOnly && (
+            <Text
+              accessibilityRole="header"
+              style={[s.heading, {color: T.text}]}
+              numberOfLines={1}
+              maxFontSizeMultiplier={1.2}>
+              {t('members.title')}
+            </Text>
+          )}
           <Text style={{fontSize: fs(11), color: T.dim, marginTop: 2, marginBottom: 10}} numberOfLines={1} maxFontSizeMultiplier={1.2}>
             {(query || activeGroup || activeTag)
               ? t('members.countFiltered', {filtered: filtered.length, total: tabMembers.length})
@@ -333,9 +336,11 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
               style={[s.addBtn, {backgroundColor: T.surface, borderColor: T.border}]}>
               <Text style={{fontSize: fs(12), fontWeight: '500', color: T.dim}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('members.select')}</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={memberTab === 'customFronts' ? (onAddCustomFront || onAdd) : onAdd} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={memberTab === 'customFronts' ? t('members.addCustomFront') : t('members.add')} style={[s.addBtn, {backgroundColor: T.accentBg, borderColor: `${T.accent}40`}]}>
-              <Text style={{fontSize: fs(13), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{memberTab === 'customFronts' ? `+ ${t('members.customFront')}` : t('members.add')}</Text>
-            </TouchableOpacity>
+            {!archiveOnly && (
+              <TouchableOpacity onPress={memberTab === 'customFronts' ? (onAddCustomFront || onAdd) : onAdd} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={memberTab === 'customFronts' ? t('members.addCustomFront') : t('members.add')} style={[s.addBtn, {backgroundColor: T.accentBg, borderColor: `${T.accent}40`}]}>
+                <Text style={{fontSize: fs(13), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{memberTab === 'customFronts' ? `+ ${t('members.customFront')}` : t('members.add')}</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       )}
@@ -367,19 +372,20 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
         </View>
       )}
 
+      {!archiveOnly && (
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 14}} contentContainerStyle={{borderBottomWidth: 1, borderBottomColor: T.border}}>
-        {(['active', 'archived', 'customFronts'] as const).map(tab => (
+        {(['active', 'customFronts'] as const).map(tab => (
           <TouchableOpacity key={tab} onPress={() => switchTab(tab)} activeOpacity={0.7}
             accessibilityRole="tab" accessibilityState={{selected: memberTab === tab}}
             style={{paddingVertical: 10, paddingHorizontal: 14, borderBottomWidth: 2, borderBottomColor: memberTab === tab ? T.accent : 'transparent'}}>
             <Text style={{fontSize: fs(13), color: memberTab === tab ? T.accent : T.dim, fontWeight: memberTab === tab ? '600' : '400'}} numberOfLines={1}>
               {tab === 'active' ? t('members.active')
-                : tab === 'customFronts' ? `${t('members.customFronts')}${customFrontCount > 0 ? ` (${customFrontCount})` : ''}`
-                : `${t('members.archived')}${archivedCount > 0 ? ` (${archivedCount})` : ''}`}
+                : `${t('members.customFronts')}${customFrontCount > 0 ? ` (${customFrontCount})` : ''}`}
             </Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
+      )}
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 10, flexGrow: 0}}>
         <View style={{flexDirection: 'row', gap: 6, paddingHorizontal: 2}}>

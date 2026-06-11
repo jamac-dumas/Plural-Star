@@ -17,13 +17,14 @@ interface Props {
   onAdd: () => void;
   onEdit: (entry: JournalEntry) => void;
   onDelete: (id: string) => void;
+  onTogglePin: (entry: JournalEntry) => void;
   onSaveTemplates: (t: JournalTemplate[]) => void;
   onMentionPress?: (memberId: string) => void;
 }
 
 type JournalSubTab = 'entries' | 'templates';
 
-export const JournalScreen = ({theme: T, journal, templates, members, systemJournalPassword, onAdd, onEdit, onDelete, onSaveTemplates, onMentionPress}: Props) => {
+export const JournalScreen = ({theme: T, journal, templates, members, systemJournalPassword, onAdd, onEdit, onDelete, onTogglePin, onSaveTemplates, onMentionPress}: Props) => {
   const {t} = useTranslation();
   const fs = (s: number) => Math.round(s * (T.textScale || 1));
   const [journalUnlocked, setJournalUnlocked] = useState(!systemJournalPassword);
@@ -64,7 +65,7 @@ export const JournalScreen = ({theme: T, journal, templates, members, systemJour
     const tagMatch = !activeTag || (e.hashtags || []).includes(activeTag);
     const authorMatch = !activeAuthor || (e.authorIds || []).includes(activeAuthor);
     return tagMatch && authorMatch;
-  });
+  }).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
 
   const filteredTags = allTags.filter(tag => !tagSearch || tag.toLowerCase().includes(tagSearch.toLowerCase()));
   const filteredAuthors = sortMembersBySearch(activeAuthors.filter(m => !authorSearch || m.name.toLowerCase().includes(authorSearch.toLowerCase())), authorSearch);
@@ -299,11 +300,12 @@ export const JournalScreen = ({theme: T, journal, templates, members, systemJour
             const authors = (e.authorIds || []).map(id => getMember(id)).filter(Boolean) as Member[];
             const isLocked = !!e.password && !unlockedEntries.has(e.id);
             return (
-              <View key={e.id} style={[s.card, {backgroundColor: T.card, borderColor: T.border}]}>
+              <View key={e.id} style={[s.card, {backgroundColor: e.pinned ? `${T.accent}10` : T.card, borderColor: e.pinned ? `${T.accent}50` : T.border}]}>
                 <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4}}>
-                  <Text style={{fontSize: fs(15), fontWeight: '500', color: T.text, flex: 1, marginRight: 8}} numberOfLines={2}>{e.title || t('common.untitled')}</Text>
+                  <Text style={{fontSize: fs(15), fontWeight: '500', color: T.text, flex: 1, marginRight: 8}} numberOfLines={2}>{e.pinned ? '📌 ' : ''}{e.title || t('common.untitled')}</Text>
                   <View style={{flexDirection: 'row', alignItems: 'center', gap: 4}}>
                     {isLocked && <Text style={{fontSize: fs(13)}} accessibilityLabel={t('journal.locked')}>🔒</Text>}
+                    <TouchableOpacity onPress={() => onTogglePin(e)} style={{padding: 4}} accessibilityRole="button" accessibilityState={{selected: !!e.pinned}} accessibilityLabel={e.pinned ? t('noteboard.unpin') : t('noteboard.pin')}><Text style={{fontSize: fs(12), color: e.pinned ? T.accent : T.muted}}>📌</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => handleEntryTap(e)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={`${t('common.edit')}, ${e.title || t('common.untitled')}`} style={{paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}><Text style={{fontSize: fs(11), fontWeight: '500', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('common.edit')}</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => setExportMenuEntry(e)} style={{padding: 4}} accessibilityRole="button" accessibilityLabel={t('common.export')}><Text style={{fontSize: fs(14), color: T.dim}}>↑</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => handleDeleteTap(e)} style={{padding: 4}} accessibilityRole="button" accessibilityLabel={t('common.delete')}><Text style={{fontSize: fs(14), color: T.muted}}>✕</Text></TouchableOpacity>

@@ -208,7 +208,7 @@ export const clearFrontNotification = async () => {
   }
 };
 
-export const scheduleFrontCheckReminder = async (intervalHours: number) => {
+export const scheduleFrontCheckReminder = async (intervalHours: number, singlet = false) => {
   try {
     await cancelFrontCheckReminder();
     if (!intervalHours || intervalHours <= 0) return;
@@ -222,8 +222,12 @@ export const scheduleFrontCheckReminder = async (intervalHours: number) => {
     await notifee.createTriggerNotification(
       {
         id: FRONT_CHECK_NOTIF_ID,
-        title: `◈ ${i18n.t('notification.frontCheck', {defaultValue: 'Front Check'})}`,
-        body: i18n.t('notification.whosFronting', {defaultValue: "Who's fronting right now?"}),
+        title: singlet
+          ? `◈ ${i18n.t('notification.statusCheck', {defaultValue: 'Status Check'})}`
+          : `◈ ${i18n.t('notification.frontCheck', {defaultValue: 'Front Check'})}`,
+        body: singlet
+          ? i18n.t('notification.whatsYourStatus', {defaultValue: "What's your status right now?"})
+          : i18n.t('notification.whosFronting', {defaultValue: "Who's fronting right now?"}),
         android: {
           channelId: REMINDER_CHANNEL_ID,
           smallIcon: 'ic_stat_notification',

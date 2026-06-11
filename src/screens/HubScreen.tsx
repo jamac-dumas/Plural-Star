@@ -7,7 +7,7 @@ import {Member, HistoryEntry, FrontState, FrontTierKey, fmtTime, fmtDur, allFron
 import {DateTimeEditor} from '../components/DateTimeEditor';
 import {Avatar} from '../components/Avatar';
 
-type HubTile = 'share' | 'retroHistory' | 'statistics' | 'chat' | 'customFields' | 'systemManager' | 'polls' | 'discord' | 'credits' | 'supportPS';
+type HubTile = 'share' | 'retroHistory' | 'statistics' | 'chat' | 'customFields' | 'systemManager' | 'archive' | 'polls' | 'discord' | 'credits' | 'supportPS';
 
 interface Props {
   theme: any;
@@ -23,6 +23,7 @@ interface Props {
   renderChatScreen: () => React.ReactNode;
   renderCustomFieldsScreen: () => React.ReactNode;
   renderSystemManagerScreen: () => React.ReactNode;
+  renderArchiveScreen: () => React.ReactNode;
   renderPollsScreen: () => React.ReactNode;
   resetKey?: number;
   editHistoryIndex?: number | null;
@@ -367,7 +368,7 @@ const RetroHistoryScreen = ({T, members, history, front, onSaveHistory, onSetFro
 const DISCORD_URL = 'https://discord.gg/FFQw33cu8m';
 const BMC_URL = 'https://www.buymeacoffee.com/PluralStar';
 
-export const HubScreen = ({theme: T, singlet = false, selfId, members, history, front, onSaveHistory, onSetFront, renderShareScreen, renderStatsScreen, renderChatScreen, renderCustomFieldsScreen, renderSystemManagerScreen, renderPollsScreen, resetKey, editHistoryIndex, onClearEditHistory}: Props) => {
+export const HubScreen = ({theme: T, singlet = false, selfId, members, history, front, onSaveHistory, onSetFront, renderShareScreen, renderStatsScreen, renderChatScreen, renderCustomFieldsScreen, renderSystemManagerScreen, renderArchiveScreen, renderPollsScreen, resetKey, editHistoryIndex, onClearEditHistory}: Props) => {
   const {t} = useTranslation();
   const fs = (s: number) => Math.round(s * (T.textScale || 1));
   const [activeTile, setActiveTile] = useState<HubTile | null>(null);
@@ -472,6 +473,20 @@ export const HubScreen = ({theme: T, singlet = false, selfId, members, history, 
     );
   }
 
+  if (activeTile === 'archive') {
+    return (
+      <View style={{flex: 1, backgroundColor: T.bg}}>
+        <View style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8}}>
+          <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('common.back')} style={{padding: 4, marginRight: 12}}>
+            <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
+          </TouchableOpacity>
+          <Text accessibilityRole="header" style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('hub.archive')}</Text>
+        </View>
+        {renderArchiveScreen()}
+      </View>
+    );
+  }
+
   if (activeTile === 'polls') {
     return (
       <View style={{flex: 1, backgroundColor: T.bg}}>
@@ -523,11 +538,12 @@ export const HubScreen = ({theme: T, singlet = false, selfId, members, history, 
     {id: 'chat', icon: '⌨', label: t('hub.systemChat')},
     {id: 'customFields', icon: '☰', label: t('customFields.title')},
     {id: 'systemManager', icon: '🗂', label: t('systemManager.title')},
+    {id: 'archive', icon: '🗃', label: t('hub.archive')},
     {id: 'polls', icon: '📊', label: t('polls.title')},
     {id: 'credits', icon: '✦', label: t('hub.credits')},
     {id: 'discord', icon: '💬', label: t('hub.discord'), external: true},
     {id: 'supportPS', icon: '☕', label: t('hub.supportPS'), external: true},
-  ].filter(tile => !singlet || (tile.id !== 'chat' && tile.id !== 'systemManager' && tile.id !== 'customFields' && tile.id !== 'polls')) as {id: HubTile; icon: string; label: string; external?: boolean}[];
+  ].filter(tile => !singlet || (tile.id !== 'chat' && tile.id !== 'systemManager' && tile.id !== 'customFields' && tile.id !== 'polls' && tile.id !== 'archive')) as {id: HubTile; icon: string; label: string; external?: boolean}[];
 
   const handleTilePress = (tile: typeof tiles[0]) => {
     if (tile.external && tile.id === 'discord') {

@@ -190,6 +190,7 @@ export interface JournalEntry {
   hashtags: string[];
   password?: string;
   timestamp: number;
+  pinned?: boolean;
 }
 
 export interface JournalTemplate {

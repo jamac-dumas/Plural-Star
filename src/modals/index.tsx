@@ -1519,10 +1519,10 @@ export const SystemModal = ({visible, theme: T, system, settings, palettes, acti
           <TouchableOpacity onPress={() => setNotifEnabled(!notifEnabled)} activeOpacity={0.8} accessibilityRole="switch" accessibilityState={{checked: notifEnabled}} accessibilityLabel={t('modal.notifications')} style={{width: 40, height: 22, borderRadius: 11, backgroundColor: notifEnabled ? T.accent : T.toggleOff, justifyContent: 'center', marginLeft: 12}}><View style={{width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff', position: 'absolute', left: notifEnabled ? 20 : 3}} /></TouchableOpacity></View>
 
         <View style={{marginTop: 12}}>
-          <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 4}}>{t('notification.frontCheck')}</Text>
-          <Text style={{fontSize: fs(11), color: T.muted, lineHeight: 15, marginBottom: 8}}>{t('notification.frontCheckDesc')}</Text>
+          <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 4}}>{singletMode ? t('notification.statusCheck') : t('notification.frontCheck')}</Text>
+          <Text style={{fontSize: fs(11), color: T.muted, lineHeight: 15, marginBottom: 8}}>{singletMode ? t('notification.statusCheckDesc') : t('notification.frontCheckDesc')}</Text>
           <TouchableOpacity onPress={() => setShowFrontCheckPicker(!showFrontCheckPicker)} activeOpacity={0.7}
-            accessibilityRole="button" accessibilityState={{expanded: showFrontCheckPicker}} accessibilityLabel={t('notification.frontCheck')} accessibilityValue={{text: frontCheckInterval === 0 ? t('common.close') : t('notification.everyNHours', {count: frontCheckInterval})}}
+            accessibilityRole="button" accessibilityState={{expanded: showFrontCheckPicker}} accessibilityLabel={singletMode ? t('notification.statusCheck') : t('notification.frontCheck')} accessibilityValue={{text: frontCheckInterval === 0 ? t('common.close') : t('notification.everyNHours', {count: frontCheckInterval})}}
             style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, borderWidth: 1, backgroundColor: T.surface, borderColor: showFrontCheckPicker ? `${T.accent}60` : T.border}}>
             <Text style={{fontSize: fs(14), color: T.text}}>{frontCheckInterval === 0 ? t('common.close') : t('notification.everyNHours', {count: frontCheckInterval})}</Text>
             <Text style={{fontSize: fs(12), color: T.dim}} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{showFrontCheckPicker ? '▲' : '▼'}</Text>
@@ -1571,6 +1571,7 @@ export const SystemModal = ({visible, theme: T, system, settings, palettes, acti
           )}
         </View>
 
+        {!singletMode && (
         <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14}}>
           <View style={{flex: 1}}>
             <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 4}}>{t('notification.noteboard')}</Text>
@@ -1578,6 +1579,7 @@ export const SystemModal = ({visible, theme: T, system, settings, palettes, acti
           </View>
           <TouchableOpacity onPress={() => setNoteboardNotifs(!noteboardNotifs)} activeOpacity={0.8} accessibilityRole="switch" accessibilityState={{checked: noteboardNotifs}} accessibilityLabel={t('notification.noteboard')} style={{width: 40, height: 22, borderRadius: 11, backgroundColor: noteboardNotifs ? T.accent : T.toggleOff, justifyContent: 'center', marginLeft: 12}}><View style={{width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff', position: 'absolute', left: noteboardNotifs ? 20 : 3}} /></TouchableOpacity>
         </View>
+        )}
       </View>
       <View style={{borderTopWidth: 1, borderTopColor: T.border, paddingTop: 14, marginTop: 14}}>
         <View style={{marginBottom: 8}}><Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 4}}>{t('modal.language')}</Text><Text style={{fontSize: fs(11), color: T.muted, lineHeight: 15}}>{t('modal.languageDesc')}</Text></View>

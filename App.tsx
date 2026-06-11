@@ -335,9 +335,9 @@ function MainAppContent() {
     if (!appSettings.notificationsEnabled || interval <= 0) {
       cancelFrontCheckReminder().catch(e => console.error('[PS] front-check cancel error:', e));
     } else {
-      scheduleFrontCheckReminder(interval).catch(e => console.error('[PS] front-check schedule error:', e));
+      scheduleFrontCheckReminder(interval, appSettings.accountMode === 'singlet').catch(e => console.error('[PS] front-check schedule error:', e));
     }
-  }, [appSettings.frontCheckInterval, appSettings.notificationsEnabled]);
+  }, [appSettings.frontCheckInterval, appSettings.notificationsEnabled, appSettings.accountMode]);
 
   useEffect(() => {
     const mins = appSettings.notificationRefreshMinutes || 0;
@@ -350,7 +350,7 @@ function MainAppContent() {
 
   const prevFrontIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!appSettings.notificationsEnabled || !appSettings.noteboardNotifications) {
+    if (!appSettings.notificationsEnabled || !appSettings.noteboardNotifications || appSettings.accountMode === 'singlet') {
       prevFrontIdsRef.current = new Set();
       clearNoteboardNotification().catch(() => {});
       return;
@@ -394,7 +394,7 @@ function MainAppContent() {
         }
       } catch (e) { console.error('[PS] noteboard unread check error:', e); }
     })();
-  }, [front, members, appSettings.notificationsEnabled, appSettings.noteboardNotifications]);
+  }, [front, members, appSettings.notificationsEnabled, appSettings.noteboardNotifications, appSettings.accountMode]);
 
   const saveSystem = async (d: SystemInfo) => {setSystem(d); await store.set(KEYS.system, d);};
   const saveMembers = async (d: Member[]) => {
@@ -675,6 +675,17 @@ function MainAppContent() {
     <PollsScreen theme={C} members={members} />
   );
 
+  const renderArchiveScreen = () => (
+    <MembersScreen theme={C} members={members} front={front} groups={groups} archiveOnly
+      onAdd={() => {}}
+      onEdit={m => {setEditMember(m); setViewOnlyMember(false); setAddCustomFront(false); setShowMember(true);}}
+      onView={m => {setEditMember(m); setViewOnlyMember(true); setShowMember(true);}}
+      onSaveGroups={saveGroups}
+      onBulkRestore={(ids: string[]) => bulkSetArchived(ids, false)}
+      onBulkDelete={bulkDeleteMembers}
+    />
+  );
+
   const renderScreen = () => {
     switch (tab) {
       case 'front':
@@ -715,9 +726,9 @@ function MainAppContent() {
           onBulkAddGroups={bulkAddGroups}
         />;
       case 'hub':
-        return <HubScreen theme={C} singlet={isSinglet} selfId={selfMember?.id} members={members} history={history} front={front} onSaveHistory={saveHistory} onSetFront={handleHubSetFront} renderShareScreen={renderShareScreen} renderStatsScreen={renderStatsScreen} renderChatScreen={renderChatScreen} renderCustomFieldsScreen={renderCustomFieldsScreen} renderSystemManagerScreen={() => <SystemManagerScreen theme={C} members={members} groups={groups} onSaveGroups={saveGroups} />} renderPollsScreen={renderPollsScreen} resetKey={hubResetKey} editHistoryIndex={editHistoryIndex} onClearEditHistory={() => setEditHistoryIndex(null)} />;
+        return <HubScreen theme={C} singlet={isSinglet} selfId={selfMember?.id} members={members} history={history} front={front} onSaveHistory={saveHistory} onSetFront={handleHubSetFront} renderShareScreen={renderShareScreen} renderStatsScreen={renderStatsScreen} renderChatScreen={renderChatScreen} renderCustomFieldsScreen={renderCustomFieldsScreen} renderSystemManagerScreen={() => <SystemManagerScreen theme={C} members={members} groups={groups} onSaveGroups={saveGroups} />} renderArchiveScreen={renderArchiveScreen} renderPollsScreen={renderPollsScreen} resetKey={hubResetKey} editHistoryIndex={editHistoryIndex} onClearEditHistory={() => setEditHistoryIndex(null)} />;
       case 'journal':
-        return <JournalScreen theme={C} journal={journal} templates={journalTemplates} members={members} systemJournalPassword={system.journalPassword} onAdd={() => {setEditJournal(null); setShowJournal(true);}} onEdit={e => {setEditJournal(e); setShowJournal(true);}} onDelete={deleteEntry} onSaveTemplates={saveJournalTemplates} onMentionPress={openMemberById} />;
+        return <JournalScreen theme={C} journal={journal} templates={journalTemplates} members={members} systemJournalPassword={system.journalPassword} onAdd={() => {setEditJournal(null); setShowJournal(true);}} onEdit={e => {setEditJournal(e); setShowJournal(true);}} onDelete={deleteEntry} onTogglePin={e => saveEntry({...e, pinned: !e.pinned})} onSaveTemplates={saveJournalTemplates} onMentionPress={openMemberById} />;
       case 'history':
         return <HistoryScreen theme={C} history={history} journal={journal} getMember={getMember} members={members} singlet={isSinglet} selfId={selfMember?.id} onSaveHistory={saveHistory} onEditEntry={(idx: number) => {setEditHistoryIndex(idx); setTab('hub');}} />;
     }
