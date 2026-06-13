@@ -1,5 +1,5 @@
-import React, {useState, useEffect} from 'react';
-import {View, ScrollView, TouchableOpacity, Alert, KeyboardAvoidingView} from 'react-native';
+import React, {useState, useEffect, useRef} from 'react';
+import {View, ScrollView, TouchableOpacity, Alert, KeyboardAvoidingView, AccessibilityInfo, findNodeHandle} from 'react-native';
 import {Text, TextInput} from '../components/AppText';
 import {useKeyboardBehavior} from '../hooks/useKeyboardBehavior';
 import {useTranslation} from 'react-i18next';
@@ -74,14 +74,30 @@ export const CustomFieldsScreen = ({theme: T, onUpdate}: Props) => {
     save(fields.map(f => f.id === id ? {...f, markdown: !f.markdown} : f));
   };
 
+  const moveBtnRefs = useRef<Record<string, any>>({});
+
   const moveField = (id: string, direction: 'up' | 'down') => {
     const idx = fields.findIndex(f => f.id === id);
     if (direction === 'up' && idx === 0) return;
     if (direction === 'down' && idx === fields.length - 1) return;
     const updated = [...fields];
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    const neighbor = fields[swapIdx];
     [updated[idx], updated[swapIdx]] = [updated[swapIdx], updated[idx]];
     save(updated.map((f, i) => ({...f, sortOrder: i})));
+    const msg = swapIdx === 0
+      ? t('common.movedToTop')
+      : swapIdx === fields.length - 1
+        ? t('common.movedToBottom')
+        : direction === 'up'
+          ? t('common.movedAbove', {name: neighbor.name})
+          : t('common.movedBelow', {name: neighbor.name});
+    AccessibilityInfo.announceForAccessibility(msg);
+    setTimeout(() => {
+      const node = moveBtnRefs.current[id];
+      const tag = node ? findNodeHandle(node) : null;
+      if (tag) AccessibilityInfo.setAccessibilityFocus(tag);
+    }, 100);
   };
 
   const typeLabel = (type: CustomFieldType) => t(`customFields.type${type.charAt(0).toUpperCase() + type.slice(1)}` as any);
@@ -100,6 +116,7 @@ export const CustomFieldsScreen = ({theme: T, onUpdate}: Props) => {
             <View style={{flexDirection: 'row', alignItems: 'center', gap: 10}}>
               <View style={{alignItems: 'center', gap: 2}}>
                 <TouchableOpacity
+                  ref={(el) => { moveBtnRefs.current[fd.id] = el; }}
                   onPress={() => moveField(fd.id, 'up')}
                   disabled={i === 0}
                   hitSlop={{top: 10, bottom: 6, left: 12, right: 12}}

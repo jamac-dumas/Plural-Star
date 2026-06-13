@@ -53,8 +53,13 @@ export const JournalScreen = ({theme: T, journal, templates, members, systemJour
     setEditingTemplate(null);
   };
   const handleDeleteTemplate = (id: string) => {
-    onSaveTemplates(templates.filter(x => x.id !== id));
-    setEditingTemplate(null);
+    Alert.alert(t('common.delete'), t('journal.deleteTemplateMsg'), [
+      {text: t('common.cancel'), style: 'cancel'},
+      {text: t('common.delete'), style: 'destructive', onPress: () => {
+        onSaveTemplates(templates.filter(x => x.id !== id));
+        setEditingTemplate(null);
+      }},
+    ]);
   };
 
   const getMember = (id: string) => members.find(m => m.id === id);

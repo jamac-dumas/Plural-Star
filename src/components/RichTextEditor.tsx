@@ -54,7 +54,7 @@ const MentionPicker = ({members, theme: T, onPick, onCancel}: {members: Member[]
   const [search, setSearch] = useState('');
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const active = members.filter(m => !m.archived);
+    const active = members.filter(m => !m.archived && !m.isCustomFront);
     if (!q) return active;
     return active.filter(m => m.name.toLowerCase().includes(q));
   }, [members, search]);

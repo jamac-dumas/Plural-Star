@@ -1,5 +1,5 @@
 import React, {useState, useMemo, useCallback, useDeferredValue, useRef, useEffect} from 'react';
-import {View, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal} from 'react-native';
+import {View, ScrollView, TouchableOpacity, StyleSheet, Alert, Modal, AccessibilityInfo} from 'react-native';
 import {Text, TextInput} from '../components/AppText';
 import {Avatar} from '../components/Avatar';
 import {FlashList, FlashListRef} from '@shopify/flash-list';
@@ -256,6 +256,23 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
 
   const handleActivate = useCallback((mm: Member) => (onView || onEdit)(mm), [onView, onEdit]);
 
+  const handleReorder = useCallback((id: string, direction: 'up' | 'down') => {
+    const idx = filtered.findIndex(m => m.id === id);
+    if (idx === -1) return;
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= filtered.length) return;
+    const neighbor = filtered[swapIdx];
+    const msg = swapIdx === 0
+      ? t('common.movedToTop')
+      : swapIdx === filtered.length - 1
+        ? t('common.movedToBottom')
+        : direction === 'up'
+          ? t('common.movedAbove', {name: neighbor.name})
+          : t('common.movedBelow', {name: neighbor.name});
+    AccessibilityInfo.announceForAccessibility(msg);
+    onReorderMember && onReorderMember(id, direction);
+  }, [filtered, t, onReorderMember]);
+
   const renderMember = useCallback(({item: m, index}: {item: Member; index: number}) => (
     <MemberCard
       m={m}
@@ -273,10 +290,10 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
       onActivate={handleActivate}
       onToggleSelect={toggleSelected}
       onEnterSelection={enterSelection}
-      onReorder={onReorderMember}
+      onReorder={handleReorder}
       onEditMember={onEdit}
     />
-  ), [filtered.length, selectionMode, selectedIds, showReorder, front, allFrontIds, groups, T, fs, t, handleActivate, toggleSelected, enterSelection, onReorderMember, onEdit]);
+  ), [filtered.length, selectionMode, selectedIds, showReorder, front, allFrontIds, groups, T, fs, t, handleActivate, toggleSelected, enterSelection, handleReorder, onEdit]);
 
   const allVisibleIds = filtered.map(m => m.id);
   const allSelectedInView = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedIds.has(id));
@@ -460,6 +477,7 @@ export const MembersScreen = ({theme: T, members, front, groups, initialSortMode
       renderItem={renderMember}
       keyExtractor={(m: Member) => m.id}
       extraData={flashExtraData}
+      maintainVisibleContentPosition={{disabled: true}}
       contentContainerStyle={{padding: 16, paddingBottom: 32, backgroundColor: T.bg}}
       keyboardShouldPersistTaps="handled"
       onScroll={e => setShowTop((e.nativeEvent.contentOffset?.y || 0) > 500)}

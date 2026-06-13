@@ -14,9 +14,9 @@ import {T, BUILTIN_PALETTES, deriveTheme} from './src/theme';
 import type {CustomPalette, ThemeColors} from './src/theme';
 import {AccentText} from './src/components/AccentText';
 import {store, KEYS} from './src/storage';
-import {SystemInfo, Member, MemberGroup, FrontState, FrontTier, FrontTierKey, HistoryEntry, JournalEntry, JournalTemplate, ShareSettings, AppSettings, ChatChannel, ChatMessage, NoteboardEntry, DEFAULT_CHANNELS, findOpenFrontInHistory, migrateFrontState, frontToHistoryEntry, uid, makeDefaultCustomFronts, isFrontEmpty, allFrontMemberIds, singletStatuses} from './src/utils';
+import {SystemInfo, Member, MemberGroup, FrontState, FrontTier, FrontTierKey, HistoryEntry, JournalEntry, JournalTemplate, ShareSettings, AppSettings, ChatChannel, ChatMessage, NoteboardEntry, DeviceCodes, MedicalData, DEFAULT_MEDICAL, DEFAULT_CHANNELS, findOpenFrontInHistory, migrateFrontState, frontToHistoryEntry, uid, makeDefaultCustomFronts, isFrontEmpty, allFrontMemberIds, singletStatuses, generateFriendCode, generateSyncCode, emergencyNotificationLine} from './src/utils';
 import {migrateInlineAvatars, migrateInlineChatMedia, clearAllMedia, migrateStaleMediaPaths, rebaseChatMessageMedia} from './src/utils/mediaUtils';
-import {showFrontNotification, clearFrontNotification, scheduleFrontCheckReminder, cancelFrontCheckReminder, showNoteboardNotification, clearNoteboardNotification, scheduleFrontNotificationRefresh, cancelFrontNotificationRefresh} from './src/services/NotificationService';
+import {showFrontNotification, clearFrontNotification, scheduleFrontCheckReminder, cancelFrontCheckReminder, showNoteboardNotification, clearNoteboardNotification, scheduleFrontNotificationRefresh, cancelFrontNotificationRefresh, setEmergencyNotificationInfo, rescheduleMedicationReminders, rescheduleAppointmentReminders} from './src/services/NotificationService';
 
 import {SetupScreen} from './src/screens/SetupScreen';
 import {LockScreen} from './src/screens/LockScreen';
@@ -31,6 +31,8 @@ import {StatsScreen} from './src/screens/StatsScreen';
 import {ChatScreen} from './src/screens/ChatScreen';
 import {CustomFieldsScreen} from './src/screens/CustomFieldsScreen';
 import {PollsScreen} from './src/screens/PollsScreen';
+import {SystemMapScreen} from './src/screens/SystemMapScreen';
+import {MedicalScreen} from './src/screens/MedicalScreen';
 import {StatusScreen} from './src/screens/StatusScreen';
 import {ProfileScreen} from './src/screens/ProfileScreen';
 import {SetFrontModal, SetStatusModal, EditFrontDetailModal, MemberModal, JournalModal, SystemModal, CustomFrontModal} from './src/modals';
@@ -85,6 +87,10 @@ function MainAppContent() {
   const [firstRun, setFirstRun] = useState(false);
   const [locked, setLocked] = useState(false);
   const [tab, setTab] = useState<Tab>('front');
+  const [mountedTabs, setMountedTabs] = useState<Tab[]>(['front']);
+  useEffect(() => {
+    setMountedTabs(prev => prev.includes(tab) ? prev : [...prev, tab]);
+  }, [tab]);
   const [hubResetKey, setHubResetKey] = useState(0);
   const [editHistoryIndex, setEditHistoryIndex] = useState<number | null>(null);
   const [system, setSystem] = useState<SystemInfo>({name: '', description: ''});
@@ -100,6 +106,7 @@ function MainAppContent() {
   const [activePaletteId, setActivePaletteId] = useState<string>('__dark__');
   const [chatChannels, setChatChannels] = useState<ChatChannel[]>([]);
   const [allChatMessages, setAllChatMessages] = useState<ChatMessage[]>([]);
+  const [medical, setMedical] = useState<MedicalData>(DEFAULT_MEDICAL);
 
   const [showSetFront, setShowSetFront] = useState(false);
   const [showEditFrontDetail, setShowEditFrontDetail] = useState(false);
@@ -234,6 +241,27 @@ function MainAppContent() {
         setActivePaletteId('__light__');
       } else {
         setActivePaletteId(paletteId);
+      }
+
+      try {
+        const savedMedical = await store.get<MedicalData>(KEYS.medical);
+        const med: MedicalData = {...DEFAULT_MEDICAL, ...(savedMedical || {})};
+        setMedical(med);
+        setEmergencyNotificationInfo(emergencyNotificationLine(med.emergency));
+        await rescheduleMedicationReminders(med.medications || []);
+        await rescheduleAppointmentReminders(med.appointments || []);
+      } catch (e) {
+        console.error('[PS] medical init error:', e);
+      }
+
+      try {
+        const savedCodes = await store.get<DeviceCodes>(KEYS.deviceCodes);
+        if (!savedCodes || !savedCodes.friendCode || !savedCodes.syncCode) {
+          const fresh: DeviceCodes = {friendCode: generateFriendCode(), syncCode: generateSyncCode(), createdAt: Date.now()};
+          await store.set(KEYS.deviceCodes, fresh);
+        }
+      } catch (e) {
+        console.error('[PS] device codes init error:', e);
       }
 
       if (savedLang) changeLanguage(savedLang as SupportedLanguage);
@@ -436,6 +464,17 @@ function MainAppContent() {
   const savePalettes = async (d: CustomPalette[]) => {setPalettes(d); await store.set(KEYS.palettes, d);};
   const saveChatChannels = async (d: ChatChannel[]) => {setChatChannels(d); await store.set(KEYS.chatChannels, d); await loadChatMessages(d);};
 
+  const saveMedical = async (d: MedicalData) => {
+    setMedical(d);
+    await store.set(KEYS.medical, d);
+    setEmergencyNotificationInfo(emergencyNotificationLine(d.emergency));
+    await rescheduleMedicationReminders(d.medications || []);
+    await rescheduleAppointmentReminders(d.appointments || []);
+    if (appSettings.notificationsEnabled) {
+      showFrontNotification(front, members, system.name).catch(e => console.error('[PS] notif error:', e));
+    }
+  };
+
   const selectPalette = async (id: string) => {
     setActivePaletteId(id);
     const updated = {...appSettings, activePaletteId: id, lightMode: id === '__light__'};
@@ -461,6 +500,11 @@ function MainAppContent() {
     if (loc) { setLastKnownLocation(loc); await store.set('ps:lastLocation', loc); }
   };
 
+  const clearLastLocation = async () => {
+    setLastKnownLocation(undefined);
+    await store.remove('ps:lastLocation');
+  };
+
   useEffect(() => { store.get<string>('ps:lastLocation').then(loc => { if (loc) setLastKnownLocation(loc); }); }, []);
 
   const maybeGPS = async (manualLocation?: string): Promise<string | undefined> => {
@@ -472,11 +516,6 @@ function MainAppContent() {
 
   const updateFront = async (primary: FrontTier, coFront: FrontTier, coConscious: FrontTier) => {
     const now = Date.now();
-    let newHistory = [...history];
-    if (front) {
-      newHistory = newHistory.map(e =>
-        e.endTime === null && e.startTime === front.startTime && e.changeType === 'front' ? {...e, endTime: now} : e);
-    }
     const cleanTier = (tier: FrontTier): FrontTier =>
       tier.memberIds.length === 0
         ? {memberIds: [], mood: undefined, note: '', location: undefined, energyLevel: undefined}
@@ -486,12 +525,45 @@ function MainAppContent() {
     const cleanCoConscious = cleanTier(coConscious);
     const isEmpty = cleanPrimary.memberIds.length === 0 && cleanCoFront.memberIds.length === 0 && cleanCoConscious.memberIds.length === 0;
 
-    const quickLocation = cleanPrimary.location?.trim() || lastKnownLocation || undefined;
-    const nf: FrontState | null = isEmpty ? null : {primary: {...cleanPrimary, location: quickLocation}, coFront: cleanCoFront, coConscious: cleanCoConscious, startTime: now};
+    const sameMembers = (a: string[] = [], b: string[] = []) =>
+      a.length === b.length && [...a].sort().join('|') === [...b].sort().join('|');
+    const continuing = !!front && !isEmpty
+      && sameMembers(front.primary.memberIds, cleanPrimary.memberIds)
+      && sameMembers(front.coFront.memberIds, cleanCoFront.memberIds)
+      && sameMembers(front.coConscious.memberIds, cleanCoConscious.memberIds);
+
+    const explicitLocation = cleanPrimary.location?.trim() || undefined;
+    const nf: FrontState | null = isEmpty ? null : {primary: {...cleanPrimary, location: explicitLocation}, coFront: cleanCoFront, coConscious: cleanCoConscious, startTime: continuing ? front!.startTime : now};
+
+    let newHistory = [...history];
+    if (front && !continuing) {
+      newHistory = newHistory.map(e =>
+        e.endTime === null && e.startTime === front.startTime && (!e.changeType || e.changeType === 'front') ? {...e, endTime: now} : e);
+    }
 
     if (nf) {
       const frontEntry = frontToHistoryEntry(nf, null, 'front');
-      newHistory = [frontEntry, ...newHistory];
+      if (continuing) {
+        const extras: HistoryEntry[] = [];
+        const moodChanged = (nf.primary.mood || undefined) !== (front!.primary.mood || undefined);
+        const locChanged = (nf.primary.location || undefined) !== (front!.primary.location || undefined);
+        const noteChanged = (nf.primary.note || undefined) !== (front!.primary.note || undefined);
+        if (moodChanged || locChanged) {
+          const entry = frontToHistoryEntry(nf, null, moodChanged ? 'mood' : 'location');
+          entry.changeTime = now;
+          extras.push(entry);
+        }
+        if (noteChanged) {
+          const entry = frontToHistoryEntry(nf, null, 'note');
+          entry.changeTime = now + 1;
+          extras.push(entry);
+        }
+        newHistory = newHistory.map(e =>
+          e.endTime === null && e.startTime === front!.startTime && (!e.changeType || e.changeType === 'front') ? frontEntry : e);
+        newHistory = [...extras, ...newHistory];
+      } else {
+        newHistory = [frontEntry, ...newHistory];
+      }
     }
 
     setFront(nf);
@@ -526,15 +598,17 @@ function MainAppContent() {
     if (nf && appSettings.gpsEnabled && !cleanPrimary.location?.trim()) {
       try {
         const gpsLocation = await getGPSLocation();
-        if (gpsLocation && gpsLocation !== quickLocation) {
+        if (gpsLocation && gpsLocation !== explicitLocation) {
           const patched: FrontState = {...nf, primary: {...nf.primary, location: gpsLocation}};
           setFront(patched);
           await store.set(KEYS.front, patched);
           await updateLastLocation(gpsLocation);
         }
       } catch (e) { console.error('[PS] GPS post-save error:', e); }
-    } else if (quickLocation) {
-      await updateLastLocation(quickLocation);
+    } else if (explicitLocation) {
+      await updateLastLocation(explicitLocation);
+    } else if (nf) {
+      await clearLastLocation();
     }
   };
 
@@ -542,11 +616,14 @@ function MainAppContent() {
     if (!front) return;
     const now = Date.now();
     const tierData = front[tier];
-    const resolvedLocation = tier === 'primary' ? await maybeGPS(location?.trim() || lastKnownLocation) : tierData.location;
+    const resolvedLocation = tier === 'primary' ? await maybeGPS(location) : tierData.location;
     const updatedTier = {...tierData, mood, location: resolvedLocation, note: note ?? tierData.note};
     const updated = {...front, [tier]: updatedTier};
     setFront(updated); await store.set(KEYS.front, updated);
-    if (resolvedLocation && tier === 'primary') await updateLastLocation(resolvedLocation);
+    if (tier === 'primary') {
+      if (resolvedLocation) await updateLastLocation(resolvedLocation);
+      else await clearLastLocation();
+    }
     const extras: HistoryEntry[] = [];
     const moodChanged = (mood || undefined) !== (tierData.mood || undefined);
     const locChanged = tier === 'primary' && (resolvedLocation || undefined) !== (tierData.location || undefined);
@@ -587,7 +664,10 @@ function MainAppContent() {
     setShareSettings({showFront: true, showMembers: true, showDescriptions: false});
     setAppSettings(DEFAULT_SETTINGS); setGroups([]); setPalettes([]); setActivePaletteId('__dark__');
     setChatChannels([]); setAllChatMessages([]);
-    setTab('front'); setFirstRun(true);
+    setMedical(DEFAULT_MEDICAL); setEmergencyNotificationInfo(null);
+    await rescheduleMedicationReminders([]);
+    await rescheduleAppointmentReminders([]);
+    setTab('front'); setMountedTabs(['front']); setFirstRun(true);
   };
 
   const handleHubSetFront = async (f: FrontState | null) => {
@@ -675,6 +755,14 @@ function MainAppContent() {
     <PollsScreen theme={C} members={members} />
   );
 
+  const renderSystemMapScreen = () => (
+    <SystemMapScreen theme={C} members={members} onViewMember={openMemberById} />
+  );
+
+  const renderMedicalScreen = () => (
+    <MedicalScreen theme={C} medical={medical} onSave={saveMedical} />
+  );
+
   const renderArchiveScreen = () => (
     <MembersScreen theme={C} members={members} front={front} groups={groups} archiveOnly
       onAdd={() => {}}
@@ -686,8 +774,8 @@ function MainAppContent() {
     />
   );
 
-  const renderScreen = () => {
-    switch (tab) {
+  const renderScreenFor = (id: Tab) => {
+    switch (id) {
       case 'front':
         if (isSinglet) {
           return <StatusScreen theme={C} front={front} getMember={getMember} selfId={selfMember?.id}
@@ -726,7 +814,7 @@ function MainAppContent() {
           onBulkAddGroups={bulkAddGroups}
         />;
       case 'hub':
-        return <HubScreen theme={C} singlet={isSinglet} selfId={selfMember?.id} members={members} history={history} front={front} onSaveHistory={saveHistory} onSetFront={handleHubSetFront} renderShareScreen={renderShareScreen} renderStatsScreen={renderStatsScreen} renderChatScreen={renderChatScreen} renderCustomFieldsScreen={renderCustomFieldsScreen} renderSystemManagerScreen={() => <SystemManagerScreen theme={C} members={members} groups={groups} onSaveGroups={saveGroups} />} renderArchiveScreen={renderArchiveScreen} renderPollsScreen={renderPollsScreen} resetKey={hubResetKey} editHistoryIndex={editHistoryIndex} onClearEditHistory={() => setEditHistoryIndex(null)} />;
+        return <HubScreen theme={C} singlet={isSinglet} selfId={selfMember?.id} members={members} history={history} front={front} onSaveHistory={saveHistory} onSetFront={handleHubSetFront} renderShareScreen={renderShareScreen} renderStatsScreen={renderStatsScreen} renderChatScreen={renderChatScreen} renderCustomFieldsScreen={renderCustomFieldsScreen} renderSystemManagerScreen={() => <SystemManagerScreen theme={C} members={members} groups={groups} onSaveGroups={saveGroups} />} renderArchiveScreen={renderArchiveScreen} renderPollsScreen={renderPollsScreen} renderSystemMapScreen={renderSystemMapScreen} renderMedicalScreen={renderMedicalScreen} resetKey={hubResetKey} editHistoryIndex={editHistoryIndex} onClearEditHistory={() => setEditHistoryIndex(null)} />;
       case 'journal':
         return <JournalScreen theme={C} journal={journal} templates={journalTemplates} members={members} systemJournalPassword={system.journalPassword} onAdd={() => {setEditJournal(null); setShowJournal(true);}} onEdit={e => {setEditJournal(e); setShowJournal(true);}} onDelete={deleteEntry} onTogglePin={e => saveEntry({...e, pinned: !e.pinned})} onSaveTemplates={saveJournalTemplates} onMentionPress={openMemberById} />;
       case 'history':
@@ -762,7 +850,13 @@ function MainAppContent() {
           </View>
         </View>
       </View>
-      <View style={styles.content}>{renderScreen()}</View>
+      <View style={styles.content}>
+        {TAB_IDS.map(id => mountedTabs.includes(id) ? (
+          <View key={id} style={{flex: 1, display: tab === id ? 'flex' : 'none'}}>
+            {renderScreenFor(id)}
+          </View>
+        ) : null)}
+      </View>
       <View style={[styles.tabBar, {backgroundColor: C.surface, borderTopColor: C.border}]} accessibilityRole="tablist" accessibilityLabel={t('a11y.mainNav')}>
         {TAB_IDS.map(id => (
           <TouchableOpacity key={id} onPress={() => { if (id === 'hub' && tab === 'hub') setHubResetKey(k => k + 1); setTab(id); }} activeOpacity={0.7} accessibilityRole="tab" accessibilityState={{selected: tab === id}} accessibilityLabel={tabLabel(id)} style={[styles.tabBtn, {paddingBottom: 8 + (insets.bottom || 0)}]}>

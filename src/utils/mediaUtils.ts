@@ -37,12 +37,11 @@ const BANNER_DIR = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/ps_banners`;
 
 const DOWNLOAD_TIMEOUT_MS = 7000;
 
-const downloadImageWithExtSniff = async (
+const downloadViaBlobUtil = async (
   baseDir: string,
   id: string,
   url: string,
 ): Promise<string | undefined> => {
-  if (!url || !url.startsWith('http')) return undefined;
   try {
     await ensureDir(baseDir);
     const tempPath = `${baseDir}/${id}.tmp`;
@@ -107,6 +106,55 @@ const downloadImageWithExtSniff = async (
     try { await ReactNativeBlobUtil.fs.unlink(tempPath); } catch {}
     return `file://${finalPath}?t=${Date.now()}`;
   } catch { return undefined; }
+};
+
+const downloadViaFetchFallback = async (
+  baseDir: string,
+  id: string,
+  url: string,
+): Promise<string | undefined> => {
+  try {
+    const res = await fetch(url, {headers: {Accept: 'image/png,image/jpeg,image/webp,image/gif,image/*;q=0.8,*/*;q=0.5'}});
+    if (!res.ok) return undefined;
+    const blob: any = await res.blob();
+    const dataUrl: string = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onloadend = () => resolve(String(fr.result || ''));
+      fr.onerror = reject;
+      fr.readAsDataURL(blob);
+    });
+    const comma = dataUrl.indexOf(',');
+    if (comma < 0) return undefined;
+    const raw = dataUrl.slice(comma + 1);
+    if (!raw) return undefined;
+    let ext = 'jpg';
+    if (raw.startsWith('iVBOR')) ext = 'png';
+    else if (raw.startsWith('R0lGO')) ext = 'gif';
+    else if (raw.startsWith('UklGR')) ext = 'webp';
+    await ensureDir(baseDir);
+    for (const oldExt of ['jpg', 'png', 'gif', 'webp']) {
+      const p = `${baseDir}/${id}.${oldExt}`;
+      try { if (await ReactNativeBlobUtil.fs.exists(p)) await ReactNativeBlobUtil.fs.unlink(p); } catch {}
+    }
+    const finalPath = `${baseDir}/${id}.${ext}`;
+    await ReactNativeBlobUtil.fs.writeFile(finalPath, raw, 'base64');
+    return `file://${finalPath}?t=${Date.now()}`;
+  } catch (e) {
+    console.error('[PS] avatar fetch fallback error:', e);
+    return undefined;
+  }
+};
+
+const downloadImageWithExtSniff = async (
+  baseDir: string,
+  id: string,
+  url: string,
+): Promise<string | undefined> => {
+  if (!url || !url.startsWith('http')) return undefined;
+  const primary = await downloadViaBlobUtil(baseDir, id, url);
+  if (primary) return primary;
+  console.log('[PS] avatar primary download failed, trying fallback:', url.slice(0, 80));
+  return downloadViaFetchFallback(baseDir, id, url);
 };
 
 export const saveAvatarFromUrl = (memberId: string, url: string): Promise<string | undefined> =>

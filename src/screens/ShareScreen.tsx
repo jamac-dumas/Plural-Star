@@ -4,7 +4,7 @@ import {Text, TextInput} from '../components/AppText';
 import {useTranslation} from 'react-i18next';
 import {safePick, isPickerCancel, getPickedFilePath} from '../utils/safePicker';
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import {exportJSON, exportHTML, exportEmail, exportAllJournalJSON, exportAllJournalTxt, exportAllJournalMd, ExportCategories} from '../export/exportUtils';
+import {exportJSON, exportBundle, exportHTML, exportEmail, exportAllJournalJSON, exportAllJournalTxt, exportAllJournalMd, ExportCategories, readZipBundle, base64FromU8} from '../export/exportUtils';
 import {store, KEYS, chatMsgKey, listRecoverableBackups, restoreFromBackup, RecoverableEntry} from '../storage';
 import {SystemInfo, Member, MemberGroup, FrontState, HistoryEntry, JournalEntry, ShareSettings, AppSettings, ExportPayload, CustomFieldDef, CustomFieldType, CustomFieldValue, ChatChannel, ChatMessage, MemberPoll, uid, allFrontMemberIds, findOpenFrontInHistory} from '../utils';
 
@@ -74,8 +74,9 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [emailAddr, setEmailAddr] = useState('');
   const [restoreFile, setRestoreFile] = useState<string | null>(null);
   const [restorePath, setRestorePath] = useState<string | null>(null);
+  const [restoreIsBundle, setRestoreIsBundle] = useState<boolean>(false);
   const [restorePreview, setRestorePreview] = useState<boolean>(false);
-  const [restoreSel, setRestoreSel] = useState({system: true, members: true, avatars: true, banners: true, journal: true, frontHistory: true, groups: true, chat: true, moods: true, palettes: true, settings: true, customFields: true, noteboards: true, polls: true, journalTemplates: true});
+  const [restoreSel, setRestoreSel] = useState({system: true, members: true, avatars: true, banners: true, journal: true, frontHistory: true, groups: true, chat: true, moods: true, palettes: true, settings: true, customFields: true, noteboards: true, polls: true, journalTemplates: true, relationships: true, medical: true});
   const [restoreError, setRestoreError] = useState('');
   const [restoreDone, setRestoreDone] = useState(false);
   const [recoverEntries, setRecoverEntries] = useState<RecoverableEntry[] | null>(null);
@@ -92,6 +93,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [extPreview, setExtPreview] = useState<{members: any[]; switches: any[]; system: any; customFields?: any[]; groups?: any[]; journal?: any[]; chat?: any[]; polls?: any[]} | null>(null);
   const [extSel, setExtSel] = useState({system: true, members: true, avatars: true, banners: true, frontHistory: true, customFields: true, groups: true, journal: true, chat: true, polls: true});
   const [psAvatarIndex, setPsAvatarIndex] = useState<Record<string, string> | null>(null);
+  const [psZipFiles, setPsZipFiles] = useState<Record<string, Uint8Array> | null>(null);
 
   const primaryFronters = (front?.primary?.memberIds || []).map(getMember).filter(Boolean) as Member[];
   const coFronters = (front?.coFront?.memberIds || []).map(getMember).filter(Boolean) as Member[];
@@ -109,11 +111,12 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [exportSel, setExportSel] = useState<ExportCategories>({
     system: true, members: true, avatars: true, banners: true, frontHistory: true, journal: true,
     groups: true, chat: true, moods: true, palettes: true, settings: true,
-    customFields: true, noteboards: true, polls: true, journalTemplates: true,
+    customFields: true, noteboards: true, polls: true, journalTemplates: true, relationships: true,
+    medical: true,
   });
   const togExp = (k: keyof ExportCategories) => setExportSel(s => ({...s, [k]: !s[k]}));
 
-  const handleJSON = async () => {try {await exportJSON(system, members, history, journal, exportSel);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
+  const handleJSON = async () => {try {await exportBundle(system, members, history, journal, exportSel);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
   const handleHTML = async () => {try {await exportHTML(system, members, history, journal);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
   const handleEmail = () => {
     if (!emailAddr.trim() || !emailAddr.includes('@')) {Alert.alert(t('share.invalidEmail'), t('share.invalidEmailMsg')); return;}
@@ -143,10 +146,33 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   };
 
   const handlePickBackup = async () => {
-    setRestoreError(''); setRestorePreview(false); setRestorePath(null); setRestoreFile(null); setRestoreDone(false);
+    setRestoreError(''); setRestorePreview(false); setRestorePath(null); setRestoreFile(null); setRestoreDone(false); setRestoreIsBundle(false);
     try {
-      const [res] = await safePick({type: ['application/json', 'text/plain']});
+      const [res] = await safePick({type: ['application/json', 'application/zip', 'text/plain']});
       const pickedPath = getPickedFilePath(res);
+      const isZip = /\.zip$/i.test(res.name || '') || /\.zip$/i.test(pickedPath);
+      if (isZip) {
+        let bundle: {files: Record<string, Uint8Array>; data: any | null} | null = null;
+        try { bundle = await readZipBundle(pickedPath); }
+        catch { bundle = await readZipBundle(res.uri || pickedPath); }
+        const bdata = bundle?.data;
+        if (!bdata || !(bdata._meta?.app === 'Plural Star' || bdata._meta?.app === 'Plural Space')) {
+          setRestoreError(t('share.bundleNotRecognized'));
+          return;
+        }
+        let safeZipPath = pickedPath;
+        try {
+          const dest = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/ps_restore_pending.zip`;
+          try { await ReactNativeBlobUtil.fs.unlink(dest); } catch {}
+          await ReactNativeBlobUtil.fs.cp(pickedPath, dest);
+          safeZipPath = dest;
+        } catch {}
+        setRestorePath(safeZipPath);
+        setRestoreIsBundle(true);
+        setRestoreFile(res.name || 'backup.zip');
+        setRestorePreview(true);
+        return;
+      }
       let content: string;
       try {
         content = await ReactNativeBlobUtil.fs.readFile(pickedPath, 'utf8');
@@ -185,6 +211,77 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
       {text: t('share.restore'), style: 'destructive', onPress: async () => {
         setRestoring(true);
         try {
+          if (restoreIsBundle) {
+            const {files, data} = await readZipBundle(restorePath);
+            if (!data) throw new Error('Bundle is missing data.json');
+            if (restoreSel.system && data.system) await store.set(KEYS.system, data.system);
+            if (restoreSel.members && Array.isArray(data.members)) {
+              let mem: any[] = data.members.map((m: any) => { const {avatar_media_path, banner_media_path, ...rest} = m; return rest; });
+              if (restoreSel.avatars) {
+                const withA = data.members.filter((m: any) => m.avatar_media_path && files[m.avatar_media_path]);
+                const map: Record<string, string> = {};
+                let done = 0;
+                setRestoreProgress(t('share.progressAvatars'));
+                for (const m of withA) {
+                  const uri = await saveAvatar(m.id, base64FromU8(files[m.avatar_media_path])).catch(() => null);
+                  if (uri) map[m.id] = uri;
+                  done++; setRestoreProgress(t('share.progressAvatarsN', {done, total: withA.length}));
+                }
+                mem = mem.map(m => map[m.id] ? {...m, avatar: map[m.id]} : m);
+              }
+              if (restoreSel.banners) {
+                const withB = data.members.filter((m: any) => m.banner_media_path && files[m.banner_media_path]);
+                const map: Record<string, string> = {};
+                let done = 0;
+                setRestoreProgress(t('share.progressBanners'));
+                for (const m of withB) {
+                  const uri = await saveBannerFromBase64(m.id, base64FromU8(files[m.banner_media_path])).catch(() => null);
+                  if (uri) map[m.id] = uri;
+                  done++; setRestoreProgress(t('share.progressBannersN', {done, total: withB.length}));
+                }
+                mem = mem.map(m => map[m.id] ? {...m, banner: map[m.id]} : m);
+              }
+              setRestoreProgress(t('share.progressSavingMembers'));
+              await store.set(KEYS.members, mem);
+            }
+            if (restoreSel.journal && data.journal) await store.set(KEYS.journal, data.journal);
+            if (restoreSel.frontHistory && data.frontHistory) await store.set(KEYS.history, data.frontHistory);
+            if (restoreSel.groups && data.groups) await store.set(KEYS.groups, data.groups);
+            if (restoreSel.chat) {
+              if (data.chatChannels) await store.set(KEYS.chatChannels, data.chatChannels);
+              if (data.chatMessages) {
+                setRestoreProgress(t('share.progressChat'));
+                const channelIds = Object.keys(data.chatMessages).filter((id: string) => Array.isArray(data.chatMessages[id]) && data.chatMessages[id].length > 0);
+                await parallelMap(channelIds, async (chId: string) => {
+                  try {
+                    const {messages: migrated} = await migrateInlineChatMedia(data.chatMessages[chId]);
+                    await store.set(chatMsgKey(chId), migrated);
+                  } catch (chErr) { console.error(`[RESTORE] failed channel ${chId}:`, chErr); }
+                }, 4, (d, total) => setRestoreProgress(t('share.progressChatN', {done: d, total})));
+              }
+            }
+            if (restoreSel.settings || restoreSel.moods) {
+              const currentSettings = await store.get<AppSettings>(KEYS.settings) || {} as AppSettings;
+              let newSettings = {...currentSettings};
+              if (restoreSel.settings && data.settings) {
+                newSettings = {...data.settings};
+                if (!restoreSel.moods) newSettings.customMoods = currentSettings.customMoods || [];
+              }
+              if (restoreSel.moods) newSettings.customMoods = data.customMoods || data.settings?.customMoods || [];
+              await store.set(KEYS.settings, newSettings);
+            }
+            if (restoreSel.palettes && data.palettes) await store.set(KEYS.palettes, data.palettes);
+            if (restoreSel.frontHistory && data.front !== undefined) await store.set(KEYS.front, data.front);
+            if (restoreSel.customFields && data.customFieldDefs) await store.set(KEYS.customFieldDefs, data.customFieldDefs);
+            if (restoreSel.noteboards && data.noteboards) await store.set(KEYS.noteboards, data.noteboards);
+            if (restoreSel.polls && data.polls) await store.set(KEYS.polls, data.polls);
+            if (restoreSel.journalTemplates && data.journalTemplates) await store.set(KEYS.journalTemplates, data.journalTemplates);
+            if (restoreSel.relationships && data.relationships) await store.set(KEYS.relationships, data.relationships);
+            if (restoreSel.relationships && data.relationshipTypes) await store.set(KEYS.relationshipTypes, data.relationshipTypes);
+            if (restoreSel.medical && data.medical) await store.set(KEYS.medical, data.medical);
+            setRestoreDone(true); setTimeout(() => onDataImported(), 800);
+            return;
+          }
           const content = await ReactNativeBlobUtil.fs.readFile(restorePath, 'utf8');
           const rawData: any = JSON.parse(content);
 
@@ -313,7 +410,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               const sp_switches = rawData.frontHistory.map((s: any) => ({id: normId(s._id), content: s}));
               const newH = convertSPSwitches(sp_switches, idMap);
               if (newH.length > 0) {
-                const merged = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
+                const merged = mergeHistoryEntries(newH, history);
                 await store.set(KEYS.history, merged);
                 const importedOpenFront = findOpenFrontInHistory(merged);
                 if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -368,7 +465,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                 merged.push({id: nid, sourceId: extId, tags: [], groupIds: [], customFields: [], ...incoming});
                 idMap[extId] = nid;
               });
-              await store.set(KEYS.members, merged);
+              await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
             }
             if (restoreSel.customFields && ocFields.length > 0) {
               const existingDefs = await store.get<CustomFieldDef[]>(KEYS.customFieldDefs, []) || [];
@@ -426,7 +523,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               const ocSwitches = ocFronts.map((f: any) => ({content: {member: String(f.alter_id), startTime: ocTime(f.time_start), endTime: ocTime(f.time_end), comment: f.comment || ''}}));
               const newH = convertSPSwitches(ocSwitches, idMap);
               if (newH.length > 0) {
-                const merged = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
+                const merged = mergeHistoryEntries(newH, history);
                 await store.set(KEYS.history, merged);
                 const importedOpenFront = findOpenFrontInHistory(merged);
                 if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -510,7 +607,12 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                 const fileUri = await saveAvatar(memberId, b64).catch(() => null);
                 if (fileUri) avatarMap[memberId] = fileUri;
               }, 6, (done, total) => setRestoreProgress(t('share.progressAvatarsN', {done, total})));
-              const updated = existing.map(m => avatarMap[m.id] ? {...m, avatar: avatarMap[m.id]} : m);
+              const backupHasAvatar = new Set(entries.map(([id]) => id));
+              const updated = existing.map(m => {
+                if (avatarMap[m.id]) return {...m, avatar: avatarMap[m.id]};
+                if (backupHasAvatar.has(m.id)) return m;
+                return m.avatar ? {...m, avatar: undefined} : m;
+              });
               await store.set(KEYS.members, updated);
               data.avatars = {};
             }
@@ -525,7 +627,12 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                 const fileUri = await saveBannerFromBase64(memberId, b64).catch(() => null);
                 if (fileUri) bannerMap[memberId] = fileUri;
               }, 6, (done, total) => setRestoreProgress(t('share.progressBannersN', {done, total})));
-              const updated = current.map(m => bannerMap[m.id] ? {...m, banner: bannerMap[m.id]} : m);
+              const backupHasBanner = new Set(entries.map(([id]) => id));
+              const updated = current.map(m => {
+                if (bannerMap[m.id]) return {...m, banner: bannerMap[m.id]};
+                if (backupHasBanner.has(m.id)) return m;
+                return m.banner ? {...m, banner: undefined} : m;
+              });
               await store.set(KEYS.members, updated);
               data.banners = {};
             }
@@ -540,7 +647,12 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               const fileUri = await saveBannerFromBase64(memberId, b64).catch(() => null);
               if (fileUri) bannerMap[memberId] = fileUri;
             }, 6, (done, total) => setRestoreProgress(t('share.progressBannersN', {done, total})));
-            const updated = current.map(m => bannerMap[m.id] ? {...m, banner: bannerMap[m.id]} : m);
+            const backupHasBanner2 = new Set(entries.map(([id]) => id));
+            const updated = current.map(m => {
+              if (bannerMap[m.id]) return {...m, banner: bannerMap[m.id]};
+              if (backupHasBanner2.has(m.id)) return m;
+              return m.banner ? {...m, banner: undefined} : m;
+            });
             await store.set(KEYS.members, updated);
             data.banners = {};
           }
@@ -587,6 +699,9 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (restoreSel.noteboards && data.noteboards) await store.set(KEYS.noteboards, data.noteboards);
           if (restoreSel.polls && data.polls) await store.set(KEYS.polls, data.polls);
           if (restoreSel.journalTemplates && data.journalTemplates) await store.set(KEYS.journalTemplates, data.journalTemplates);
+          if (restoreSel.relationships && data.relationships) await store.set(KEYS.relationships, data.relationships);
+          if (restoreSel.relationships && data.relationshipTypes) await store.set(KEYS.relationshipTypes, data.relationshipTypes);
+          if (restoreSel.medical && data.medical) await store.set(KEYS.medical, data.medical);
           setRestoreDone(true); setTimeout(() => onDataImported(), 800);
         } catch (e: any) {
           setRestoreError(e.message || 'Restore failed');
@@ -594,9 +709,11 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           setRestoring(false);
           setRestoreProgress('');
           try {
-            const safeTempPath = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/ps_restore_pending.json`;
-            const exists = await ReactNativeBlobUtil.fs.exists(safeTempPath);
-            if (exists) await ReactNativeBlobUtil.fs.unlink(safeTempPath);
+            for (const f of ['ps_restore_pending.json', 'ps_restore_pending.zip']) {
+              const p = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/${f}`;
+              const exists = await ReactNativeBlobUtil.fs.exists(p);
+              if (exists) await ReactNativeBlobUtil.fs.unlink(p);
+            }
           } catch {}
         }
       }},
@@ -720,6 +837,21 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
     idMap[extId.replace(/^[a-z]+:/, '')] = nid;
   };
 
+  const finalizeMemberReplace = (merged: Member[], idMap: Record<string, string>): Member[] => {
+    const kept = new Set(Object.values(idMap));
+    return merged.filter(m => m.isCustomFront || kept.has(m.id));
+  };
+
+  const historySig = (e: HistoryEntry): string =>
+    `${e.startTime}|${[...(e.memberIds || [])].sort().join(',')}|${[...(e.coFrontIds || [])].sort().join(',')}|${[...(e.coConsciousIds || [])].sort().join(',')}|${e.changeType || 'front'}|${e.changeTime ?? ''}`;
+
+  const mergeHistoryEntries = (incoming: HistoryEntry[], existing: HistoryEntry[]): HistoryEntry[] => {
+    const map = new Map<string, HistoryEntry>();
+    for (const e of existing) map.set(historySig(e), e);
+    for (const e of incoming) map.set(historySig(e), e);
+    return [...map.values()].sort((a, b) => b.startTime - a.startTime);
+  };
+
   const downloadAvatarsTo = async (urls: Record<string, string>) => {
     const entries = Object.entries(urls);
     if (entries.length === 0) return;
@@ -756,7 +888,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           description: String(m.desc || ''), archived: !!m.archived,
         });
       });
-      await store.set(KEYS.members, merged);
+      await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
     }
     if (restoreSel.groups && ouTags.length > 0) {
       const existingGroups = await store.get<MemberGroup[]>(KEYS.groups, []) || [];
@@ -783,7 +915,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
       const switches = ouFronts.map((f: any) => ({content: {members: Array.isArray(f.memberIds) ? f.memberIds : [], startTime: f.startTime, endTime: f.isLive ? null : (f.endTime ?? null)}}));
       const newH = convertSPSwitches(switches, idMap);
       if (newH.length > 0) {
-        const merged = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
+        const merged = mergeHistoryEntries(newH, history);
         await store.set(KEYS.history, merged);
         const open = findOpenFrontInHistory(merged);
         if (open) await store.set(KEYS.front, open);
@@ -815,13 +947,13 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           description: String(a.description || ''), archived: !!a.is_archived,
         });
       });
-      await store.set(KEYS.members, merged);
+      await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
     }
     if (restoreSel.frontHistory && fronts.length > 0) {
       const switches = fronts.map((f: any) => ({content: {member: String(f.alter_id), startTime: f.start_time, endTime: f.end_time ?? null, comment: f.notes || ''}}));
       const newH = convertSPSwitches(switches, idMap);
       if (newH.length > 0) {
-        const merged = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
+        const merged = mergeHistoryEntries(newH, history);
         await store.set(KEYS.history, merged);
         const open = findOpenFrontInHistory(merged);
         if (open) await store.set(KEYS.front, open);
@@ -898,15 +1030,25 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   };
 
   const handlePluralSpacePick = async () => {
-    setRestoreError(''); setExtPreview(null); setImportStatus('idle'); setImportMsg(''); setPsAvatarIndex(null);
+    setRestoreError(''); setExtPreview(null); setImportStatus('idle'); setImportMsg(''); setPsAvatarIndex(null); setPsZipFiles(null);
     try {
-      const [res] = await safePick({type: ['application/json', 'text/plain']});
+      const [res] = await safePick({type: ['application/json', 'application/zip', 'text/plain']});
       const path = getPickedFilePath(res);
-      let raw: string;
-      try { raw = await ReactNativeBlobUtil.fs.readFile(path, 'utf8'); }
-      catch { raw = await ReactNativeBlobUtil.fs.readFile(res.uri || path, 'utf8'); }
+      const isZip = /\.zip$/i.test(res.name || '') || /\.zip$/i.test(path);
       let parsed: any;
-      try { parsed = JSON.parse(raw); } catch { throw new Error(t('share.psNotExport')); }
+      if (isZip) {
+        let bundle: {files: Record<string, Uint8Array>; data: any | null} | null = null;
+        try { bundle = await readZipBundle(path); }
+        catch { bundle = await readZipBundle(res.uri || path); }
+        parsed = bundle?.data;
+        if (!parsed) throw new Error(t('share.psNotExport'));
+        setPsZipFiles(bundle!.files);
+      } else {
+        let raw: string;
+        try { raw = await ReactNativeBlobUtil.fs.readFile(path, 'utf8'); }
+        catch { raw = await ReactNativeBlobUtil.fs.readFile(res.uri || path, 'utf8'); }
+        try { parsed = JSON.parse(raw); } catch { throw new Error(t('share.psNotExport')); }
+      }
       const ok = !parsed._meta && parsed.system && typeof parsed.system === 'object' && Array.isArray(parsed.members) && Array.isArray(parsed.fronts);
       if (!ok) throw new Error(t('share.psNotExport'));
       setExtPreview({
@@ -956,7 +1098,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                 createdAt: psTime(m.created_at) || undefined,
               });
             });
-            await store.set(KEYS.members, merged);
+            await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
           } else {
             const existing = await store.get<Member[]>(KEYS.members, []) || [];
             psMembers.forEach((m: any) => { const ex = existing.find(em => em.sourceId === 'ps:' + String(m.id)); if (ex) idMap[String(m.id)] = ex.id; });
@@ -1054,7 +1196,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (extSel.frontHistory && psFronts.length > 0) {
             const newH = convertPluralSpaceFronts(psFronts, idMap);
             if (newH.length > 0) {
-              const merged = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
+              const merged = mergeHistoryEntries(newH, history);
               await store.set(KEYS.history, merged);
               const open = findOpenFrontInHistory(merged);
               if (open) await store.set(KEYS.front, open);
@@ -1071,7 +1213,9 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               hashtags: [],
               timestamp: psTime(j.date) || psTime(j.created_at) || Date.now(),
             }));
-            const mergedJ = [...newJ, ...existingJ].sort((a, b) => b.timestamp - a.timestamp);
+            const jSig = (j: JournalEntry) => `${j.timestamp}|${j.title}`;
+            const existingJSigs = new Set(existingJ.map(jSig));
+            const mergedJ = [...newJ.filter(j => !existingJSigs.has(jSig(j))), ...existingJ].sort((a, b) => b.timestamp - a.timestamp);
             await store.set(KEYS.journal, mergedJ);
           }
 
@@ -1093,7 +1237,9 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                   content: String(msg?.content || ''),
                   timestamp: psTime(msg?.created_at) || Date.now(),
                 }));
-                const mergedMsgs = [...existingMsgs, ...newMsgs].sort((a, b) => a.timestamp - b.timestamp);
+                const msgSig = (x: ChatMessage) => `${x.timestamp}|${x.authorId}|${x.content}`;
+                const existingMsgSigs = new Set(existingMsgs.map(msgSig));
+                const mergedMsgs = [...existingMsgs, ...newMsgs.filter(x => !existingMsgSigs.has(msgSig(x)))].sort((a, b) => a.timestamp - b.timestamp);
                 await store.set(chatMsgKey(local.id), mergedMsgs);
               }
             }
@@ -1119,7 +1265,9 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                 closedAt: p?.status && p.status !== 'open' ? (psTime(p?.closes_at) || Date.now()) : undefined,
               };
             });
-            await store.set(KEYS.polls, [...existingPolls, ...newPolls]);
+            const pollSig = (p: MemberPoll) => `${p.createdAt}|${p.question}`;
+            const existingPollSigs = new Set(existingPolls.map(pollSig));
+            await store.set(KEYS.polls, [...existingPolls, ...newPolls.filter(p => !existingPollSigs.has(pollSig(p)))]);
           }
 
           const avIndex: Record<string, string> = {};
@@ -1130,9 +1278,28 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             const base = (p.split('/').pop() || '').toLowerCase();
             if (base) avIndex[base] = lid;
           });
-          setPsAvatarIndex(extSel.avatars && Object.keys(avIndex).length > 0 ? avIndex : null);
+          if (extSel.avatars && psZipFiles) {
+            setRestoreProgress(t('share.progressAvatars'));
+            const saved: Record<string, string> = {};
+            const withA = psMembers.filter((m: any) => idMap[String(m.id)] && m.avatar_media_path && psZipFiles[String(m.avatar_media_path)]);
+            let done = 0;
+            for (const m of withA) {
+              const lid = idMap[String(m.id)];
+              const uri = await saveAvatar(lid, base64FromU8(psZipFiles[String(m.avatar_media_path)])).catch(() => null);
+              if (uri) saved[lid] = uri;
+              done++; setRestoreProgress(t('share.progressAvatarsN', {done, total: withA.length}));
+            }
+            if (Object.keys(saved).length > 0) {
+              const cur = await store.get<Member[]>(KEYS.members, []) || [];
+              await store.set(KEYS.members, cur.map(m => saved[m.id] ? {...m, avatar: saved[m.id]} : m));
+            }
+            setRestoreProgress('');
+            setPsAvatarIndex(null);
+          } else {
+            setPsAvatarIndex(extSel.avatars && Object.keys(avIndex).length > 0 ? avIndex : null);
+          }
 
-          if (extSel.avatars) {
+          if (extSel.avatars && !psZipFiles) {
             const urls: Record<string, string> = {};
             psMembers.forEach((m: any) => { const lid = idMap[String(m.id)]; const u = String(m.avatar_path || ''); if (lid && /^https?:\/\//.test(u)) urls[lid] = u; });
             await downloadAvatarsTo(urls);
@@ -1256,7 +1423,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (extSel.frontHistory) {
             const switches = amFronts.map((f: any) => ({content: {member: String(f.member), startTime: f.startTime, endTime: f.endTime ?? null}}));
             const newH = convertSPSwitches(switches, idMap);
-            await store.set(KEYS.history, newH);
+            await store.set(KEYS.history, mergeHistoryEntries(newH, history));
             await store.set(KEYS.front, findOpenFrontInHistory(newH) || null);
           }
 
@@ -1286,7 +1453,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           extPreview.members.forEach((m: any) => {
             const extId: string = isPK ? (m.uuid || m.id) : m._id || m.id;
             const incoming: Partial<Member> = {
-              name: isPK ? (m.display_name || m.name || 'Unknown') : (m.content?.name || m.name || 'Unknown'),
+              name: isPK ? (m.name || m.display_name || 'Unknown') : (m.content?.name || m.name || 'Unknown'),
               pronouns: isPK ? (m.pronouns || '') : (m.content?.pronouns || ''),
               role: isPK ? '' : (m.content?.role || ''),
               color: isPK ? (m.color ? `#${m.color}` : '#DAA520') : (m.content?.color || '#DAA520'),
@@ -1324,7 +1491,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             if (extId) idMap[extId] = newId;
             if (isPK && m.id && m.id !== extId) idMap[m.id] = newId;
           });
-          await store.set(KEYS.members, merged);
+          await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
           const avatarCandidates: Record<string, string[]> = {};
           if (extSel.avatars) {
             const spFallbackUid = String((extPreview.system && (extPreview.system.id || extPreview.system.uid || extPreview.system.content?.uid)) || extPreview.members.find((x: any) => x.content?.uid || x.uid)?.content?.uid || extPreview.members.find((x: any) => x.uid)?.uid || '');
@@ -1349,7 +1516,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               const avatar = await downloadFirstAvatar(memberId, urls as string[]);
               if (avatar) avatarResults[memberId] = avatar;
             }, 4, (done, total) => setRestoreProgress(t('share.progressAvatarsDownloadN', {done, total})));
-            const withAvatars = merged.map(m => avatarResults[m.id] ? {...m, avatar: avatarResults[m.id]} : m);
+            const withAvatars = finalizeMemberReplace(merged, idMap).map(m => avatarResults[m.id] ? {...m, avatar: avatarResults[m.id]} : m);
             await store.set(KEYS.members, withAvatars);
             const avOk = Object.keys(avatarResults).length;
             if (avOk < avatarEntries.length) Alert.alert(t('share.profilePictures'), t('share.avatarsDownloaded', {done: avOk, total: avatarEntries.length}));
@@ -1508,7 +1675,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             const groupIdMap: Record<string, string> = {};
             const groupMemberMap: Record<string, string[]> = {};
             extPreview.groups.forEach((g: any) => {
-              const gName = isPK ? (g.display_name || g.name || 'Group') : (g.content?.name || g.name || 'Group');
+              const gName = isPK ? (g.name || g.display_name || 'Group') : (g.content?.name || g.name || 'Group');
               const gColor = isPK ? (g.color ? `#${g.color}` : undefined) : (g.content?.color || undefined);
               const externalId = isPK ? (g.uuid || g.id) : (g.id || g._id);
               const externalMembers: string[] = isPK
@@ -1546,7 +1713,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (extSel.frontHistory && extPreview.switches.length > 0) {
             const newH = isPK ? convertPKSwitches(extPreview.switches, idMap) : convertSPSwitches(extPreview.switches, idMap);
             if (newH.length > 0) {
-              const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
+              const mergedHistory = mergeHistoryEntries(newH, history);
               await store.set(KEYS.history, mergedHistory);
               const importedOpenFront = findOpenFrontInHistory(mergedHistory);
               if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -1563,7 +1730,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               if (isPK && m.id && m.id !== eid) existingIdMap[m.id] = bySource.id;
               return;
             }
-            const name = isPK ? (m.display_name || m.name || '') : (m.content?.name || m.name || '');
+            const name = isPK ? (m.name || m.display_name || '') : (m.content?.name || m.name || '');
             const lm = members.find(l => l.name.toLowerCase() === String(name).toLowerCase());
             if (lm) {
               existingIdMap[eid] = lm.id;
@@ -1572,7 +1739,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           });
           const newH = isPK ? convertPKSwitches(extPreview.switches, existingIdMap) : convertSPSwitches(extPreview.switches, existingIdMap);
           if (newH.length > 0) {
-            const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
+            const mergedHistory = mergeHistoryEntries(newH, history);
             await store.set(KEYS.history, mergedHistory);
             const importedOpenFront = findOpenFrontInHistory(mergedHistory);
             if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -1669,7 +1836,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             });
             if (spId) idMap[spId] = newId;
           });
-          await store.set(KEYS.members, merged);
+          await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
           const avatarUrls: Record<string, string[]> = {};
           if (extSel.avatars) {
             const spFallbackUid = String(spMembers.find((x: any) => x.uid)?.uid || '');
@@ -1755,7 +1922,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (extSel.frontHistory && spHistory.length > 0) {
             const newH = convertSPSwitches(spHistory.map((sh: any) => ({content: sh, ...sh})), idMap);
             if (newH.length > 0) {
-              const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime);
+              const mergedHistory = mergeHistoryEntries(newH, history);
               await store.set(KEYS.history, mergedHistory);
               const importedOpenFront = findOpenFrontInHistory(mergedHistory);
               if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -1953,6 +2120,8 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               ['noteboards', t('noteboard.title')],
               ['polls', t('polls.title')],
               ['journalTemplates', t('journal.templatesTab')],
+              ['relationships', t('systemMap.title')],
+              ['medical', t('medical.title')],
             ] as [keyof ExportCategories, string][]).map(([k, label]) => (
               <SectionRow key={k} label={label} value={!!exportSel[k]} onToggle={() => togExp(k)} />
             ))}
@@ -2044,6 +2213,8 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                       ['noteboards', t('noteboard.title')],
                       ['polls', t('polls.title')],
                       ['journalTemplates', t('journal.templatesTab')],
+                      ['relationships', t('systemMap.title')],
+                      ['medical', t('medical.title')],
                     ] as any[]).map(([k, label]) => (
                       <SectionRow key={k} label={label} value={restoreSel[k as keyof typeof restoreSel]} onToggle={() => togR(k)} />
                     ))}

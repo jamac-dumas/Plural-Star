@@ -16,7 +16,7 @@ export const PollsScreen = ({theme: T, members}: Props) => {
   const {t} = useTranslation();
   const fs = (s: number) => Math.round(s * (T.textScale || 1));
   const behavior = useKeyboardBehavior();
-  const activeMembers = members.filter(m => !m.archived);
+  const activeMembers = members.filter(m => !m.archived && !m.isCustomFront);
   const [polls, setPolls] = useState<MemberPoll[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [question, setQuestion] = useState('');

@@ -14,6 +14,12 @@ const memberInEntry = (memberId: string, entry: HistoryEntry): boolean =>
   (entry.coFrontIds || []).includes(memberId) ||
   (entry.coConsciousIds || []).includes(memberId);
 
+const memberTierInEntry = (memberId: string, entry: HistoryEntry): FrontTierKey | null =>
+  (entry.memberIds || []).includes(memberId) ? 'primary'
+  : (entry.coFrontIds || []).includes(memberId) ? 'coFront'
+  : (entry.coConsciousIds || []).includes(memberId) ? 'coConscious'
+  : null;
+
 type SubTab = 'front' | 'member';
 
 interface Props {
@@ -285,14 +291,42 @@ export const HistoryScreen = ({theme: T, history, journal, getMember, members, s
   const tierNames = (ids: string[] | undefined) =>
     (ids || []).map(id => memberMap.get(id)).filter(Boolean).map(m => m!.name).join(', ');
 
+  const mergedSessions = useMemo(() => {
+    if (!selectedMemberId) return [];
+    const fronts = history
+      .filter(e => (!e.changeType || e.changeType === 'front') && memberInEntry(selectedMemberId, e))
+      .slice()
+      .sort((a, b) => a.startTime - b.startTime);
+    const out: {startTime: number; endTime: number | null; tier: FrontTierKey; last: HistoryEntry; count: number}[] = [];
+    for (const e of fronts) {
+      const tier = memberTierInEntry(selectedMemberId, e) || 'primary';
+      const prev = out[out.length - 1];
+      if (prev && prev.tier === tier && prev.endTime !== null && Math.abs(e.startTime - prev.endTime) <= 1000) {
+        prev.endTime = e.endTime;
+        prev.last = e;
+        prev.count += 1;
+      } else {
+        out.push({startTime: e.startTime, endTime: e.endTime, tier, last: e, count: 1});
+      }
+    }
+    return out;
+  }, [history, selectedMemberId]);
+
   const memberHistoryEvents = selectedMemberId
-    ? history
-        .filter(e => memberInEntry(selectedMemberId, e))
-        .map(e => ({
-          type: e.changeType || 'front',
-          time: e.changeTime ?? e.startTime,
-          entry: e,
-        }))
+    ? [
+        ...mergedSessions.map(m => ({
+          type: 'front',
+          time: m.startTime,
+          entry: {...m.last, startTime: m.startTime, endTime: m.endTime},
+        })),
+        ...history
+          .filter(e => memberInEntry(selectedMemberId, e) && e.changeType && e.changeType !== 'front')
+          .map(e => ({
+            type: e.changeType as string,
+            time: e.changeTime ?? e.startTime,
+            entry: e,
+          })),
+      ]
     : [];
 
   const memberJournalEvents = selectedMemberId
@@ -424,9 +458,11 @@ export const HistoryScreen = ({theme: T, history, journal, getMember, members, s
               </View>
 
               {selectedMember && allMemberEvents.length > 0 && (() => {
-                const frontE = memberHistoryEvents.filter(e => !e.entry.changeType || e.entry.changeType === 'front');
                 const effEnd = buildEffectiveEnd(history);
-                const totalMs = frontE.reduce((sum, e) => sum + Math.max(0, (effEnd(e.entry) ?? Date.now()) - e.entry.startTime), 0);
+                const totalMs = mergedSessions.reduce((sum, m) => {
+                  const end = m.endTime ?? (m.count > 1 ? Date.now() : (effEnd(m.last) ?? Date.now()));
+                  return sum + Math.max(0, end - m.startTime);
+                }, 0);
                 const moodCounts: Record<string, number> = {};
                 memberHistoryEvents.forEach(e => {if (e.entry.mood) moodCounts[e.entry.mood] = (moodCounts[e.entry.mood] || 0) + 1;});
                 const topMood = Object.entries(moodCounts).sort((a, b) => b[1] - a[1])[0];
@@ -441,7 +477,7 @@ export const HistoryScreen = ({theme: T, history, journal, getMember, members, s
                     </View>
                     <View style={[s.stat, {backgroundColor: T.card, borderColor: T.border}]}>
                       <Text style={{fontSize: fs(9), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, marginBottom: 3}}>{t('history.sessions')}</Text>
-                      <Text style={{fontSize: fs(15), fontWeight: '700', color: T.text}}>{frontE.length}</Text>
+                      <Text style={{fontSize: fs(15), fontWeight: '700', color: T.text}}>{mergedSessions.length}</Text>
                     </View>
                     {topMood && (
                       <View style={[s.stat, {backgroundColor: T.card, borderColor: T.border}]}>

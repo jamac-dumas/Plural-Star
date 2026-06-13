@@ -504,8 +504,13 @@ export const MemberModal = ({visible, theme: T, member, members, groups, setting
   };
 
   const removeAvatar = async () => {
-    await deleteAvatar(f.id);
-    set('avatar', undefined);
+    Alert.alert(t('modal.removePfp'), t('modal.removeImageMsg'), [
+      {text: t('common.cancel'), style: 'cancel'},
+      {text: t('common.remove'), style: 'destructive', onPress: async () => {
+        await deleteAvatar(f.id);
+        set('avatar', undefined);
+      }},
+    ]);
   };
 
   const memberNotes = allNotes.filter(n => n.memberId === f.id).sort((a, b) => {
@@ -567,7 +572,7 @@ export const MemberModal = ({visible, theme: T, member, members, groups, setting
     } catch (e: any) { Alert.alert(t('modal.pfpFailed'), e?.message || ''); }
   };
 
-  const activeMembers = (members || []).filter((m: Member) => !m.archived);
+  const activeMembers = sortMembersBySearch<Member>((members || []).filter((m: Member) => !m.archived && !m.isCustomFront), '');
 
   return (
     <Sheet visible={visible} title={readOnly ? (f.name || t('modal.member')) : (isNew ? t('modal.addMember') : t('modal.editMember'))} theme={T} onClose={onClose}
@@ -651,7 +656,7 @@ export const MemberModal = ({visible, theme: T, member, members, groups, setting
             </View>
           </TouchableOpacity>
         )}
-        {f.banner && !readOnly && <TouchableOpacity onPress={() => set('banner', undefined)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('memberProfile.removeBanner')} style={{marginBottom: 8}}><Text style={{fontSize: fs(10), color: T.danger}}>{t('memberProfile.removeBanner')}</Text></TouchableOpacity>}
+        {f.banner && !readOnly && <TouchableOpacity onPress={() => Alert.alert(t('memberProfile.removeBanner'), t('modal.removeImageMsg'), [{text: t('common.cancel'), style: 'cancel'}, {text: t('common.remove'), style: 'destructive', onPress: () => set('banner', undefined)}])} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('memberProfile.removeBanner')} style={{marginBottom: 8}}><Text style={{fontSize: fs(10), color: T.danger}}>{t('memberProfile.removeBanner')}</Text></TouchableOpacity>}
 
         <Field label={t('modal.name')} value={f.name} onChange={(v: string) => set('name', v)} placeholder={t('modal.headmateName')} readOnly={readOnly} T={T} />
         <Field label={t('modal.pronouns')} value={f.pronouns} onChange={(v: string) => set('pronouns', v)} placeholder={t('modal.pronounsPlaceholder')} readOnly={readOnly} T={T} />
@@ -665,7 +670,14 @@ export const MemberModal = ({visible, theme: T, member, members, groups, setting
             style={{flex: 1, backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: hexError ? T.danger : T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9, fontSize: fs(14), fontFamily: 'monospace'}} />
         </View>
         {hexError && !readOnly && <Text style={{fontSize: fs(11), color: T.danger, marginBottom: 8}}>{t('modal.invalidHex')}</Text>}
-        {!readOnly && <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14}}>{PALETTE.map((c: string) => (<TouchableOpacity key={c} onPress={() => {set('color', c); setHexInput(c); setHexError(false);}} activeOpacity={0.8} accessibilityRole="button" accessibilityState={{selected: f.color === c}} accessibilityLabel={`${t('memberProfile.color')} ${c}`} style={{width: 30, height: 30, borderRadius: 15, backgroundColor: c, borderWidth: 2, borderColor: f.color === c ? '#fff' : 'transparent'}} />))}</View>}
+        {!readOnly && <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14}}>
+          <TouchableOpacity onPress={() => set('avatarTransparent', !f.avatarTransparent)} activeOpacity={0.8}
+            accessibilityRole="switch" accessibilityState={{checked: !!f.avatarTransparent}} accessibilityLabel={t('modal.transparentColor')}
+            style={{width: 30, height: 30, borderRadius: 15, backgroundColor: 'transparent', borderWidth: 2, borderColor: f.avatarTransparent ? '#fff' : T.border, alignItems: 'center', justifyContent: 'center'}}>
+            <Text style={{fontSize: 15, color: f.avatarTransparent ? '#fff' : T.dim}} allowFontScaling={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">⊘</Text>
+          </TouchableOpacity>
+          {PALETTE.map((c: string) => (<TouchableOpacity key={c} onPress={() => {set('color', c); setHexInput(c); setHexError(false);}} activeOpacity={0.8} accessibilityRole="button" accessibilityState={{selected: f.color === c}} accessibilityLabel={`${t('memberProfile.color')} ${c}`} style={{width: 30, height: 30, borderRadius: 15, backgroundColor: c, borderWidth: 2, borderColor: f.color === c ? '#fff' : 'transparent'}} />))}
+        </View>}
         {readOnly && <View style={{marginBottom: 14}} />}
 
         {(groups || []).length > 0 && (() => {
@@ -1131,7 +1143,7 @@ export const JournalModal = ({visible, theme: T, entry, members, templates, onSa
         {authorSearch.length > 0 && (
           <View style={{backgroundColor: T.card, borderRadius: 8, borderWidth: 1, borderColor: T.border, maxHeight: 160, overflow: 'hidden', marginBottom: 8}}>
             <ScrollView nestedScrollEnabled>
-              {sortMembersBySearch<Member>(members.filter((m: Member) => !m.archived && m.name.toLowerCase().includes(authorSearch.toLowerCase())), authorSearch).map((m: Member) => {
+              {sortMembersBySearch<Member>(members.filter((m: Member) => !m.archived && !m.isCustomFront && m.name.toLowerCase().includes(authorSearch.toLowerCase())), authorSearch).map((m: Member) => {
                 const active = (f.authorIds || []).includes(m.id);
                 return (
                   <TouchableOpacity key={m.id} onPress={() => {togAuthor(m.id); setAuthorSearch('');}} activeOpacity={0.7}
@@ -1357,8 +1369,13 @@ export const SystemModal = ({visible, theme: T, system, settings, palettes, acti
   };
 
   const deletePalette = (id: string) => {
-    onSavePalettes(userPalettes.filter(p => p.id !== id));
-    if (activePaletteId === id) onSelectPalette('__dark__');
+    Alert.alert(t('common.delete'), t('modal.deletePaletteMsg'), [
+      {text: t('common.cancel'), style: 'cancel'},
+      {text: t('common.delete'), style: 'destructive', onPress: () => {
+        onSavePalettes(userPalettes.filter(p => p.id !== id));
+        if (activePaletteId === id) onSelectPalette('__dark__');
+      }},
+    ]);
   };
 
 
@@ -1405,10 +1422,10 @@ export const SystemModal = ({visible, theme: T, system, settings, palettes, acti
               {f.banner ? <Image source={{uri: f.banner}} style={{width: '100%', height: '100%', borderRadius: 8}} resizeMode="cover" /> : <Text style={{fontSize: fs(11), color: T.dim}}>{t('systemProfile.changeBanner')}</Text>}
             </View>
           </TouchableOpacity>
-          {f.banner && <TouchableOpacity onPress={() => setF((x: any) => ({...x, banner: undefined}))} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('systemProfile.removeBanner')}><Text style={{fontSize: fs(10), color: T.danger, marginTop: 4}}>{t('systemProfile.removeBanner')}</Text></TouchableOpacity>}
+          {f.banner && <TouchableOpacity onPress={() => Alert.alert(t('systemProfile.removeBanner'), t('modal.removeImageMsg'), [{text: t('common.cancel'), style: 'cancel'}, {text: t('common.remove'), style: 'destructive', onPress: () => setF((x: any) => ({...x, banner: undefined}))}])} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('systemProfile.removeBanner')}><Text style={{fontSize: fs(10), color: T.danger, marginTop: 4}}>{t('systemProfile.removeBanner')}</Text></TouchableOpacity>}
         </View>
       </View>
-      {f.avatar && <TouchableOpacity onPress={() => setF((x: any) => ({...x, avatar: undefined}))} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('systemProfile.removeAvatar')} style={{marginBottom: 8}}><Text style={{fontSize: fs(10), color: T.danger}}>{t('systemProfile.removeAvatar')}</Text></TouchableOpacity>}
+      {f.avatar && <TouchableOpacity onPress={() => Alert.alert(t('systemProfile.removeAvatar'), t('modal.removeImageMsg'), [{text: t('common.cancel'), style: 'cancel'}, {text: t('common.remove'), style: 'destructive', onPress: () => setF((x: any) => ({...x, avatar: undefined}))}])} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('systemProfile.removeAvatar')} style={{marginBottom: 8}}><Text style={{fontSize: fs(10), color: T.danger}}>{t('systemProfile.removeAvatar')}</Text></TouchableOpacity>}
       <TouchableOpacity onPress={() => setShowAvatarLink(!showAvatarLink)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('modal.linkPfp')} style={{marginBottom: 8}}><Text style={{fontSize: fs(11), color: T.accent}}>🔗 {t('modal.linkPfp')}</Text></TouchableOpacity>
       {showAvatarLink && (
         <View style={{flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 10}}>
@@ -1681,7 +1698,15 @@ export const CustomFrontModal = ({visible, theme: T, customFront, onSave, onDele
       set('avatar', uri);
     } catch (e: any) { Alert.alert(t('modal.pfpFailed'), e?.message || ''); }
   };
-  const removePfp = async () => { await deleteAvatar(f.id); set('avatar', undefined); };
+  const removePfp = async () => {
+    Alert.alert(t('modal.removePfp'), t('modal.removeImageMsg'), [
+      {text: t('common.cancel'), style: 'cancel'},
+      {text: t('common.remove'), style: 'destructive', onPress: async () => {
+        await deleteAvatar(f.id);
+        set('avatar', undefined);
+      }},
+    ]);
+  };
 
   return (
     <Sheet visible={visible} title={statusMode ? (isNew ? t('status.add') : t('status.edit')) : (isNew ? t('customFront.add') : t('customFront.edit'))} theme={T} onClose={onClose} footer={<>
@@ -1729,7 +1754,14 @@ export const CustomFrontModal = ({visible, theme: T, customFront, onSave, onDele
           style={{flex: 1, backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: hexError ? T.danger : T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9, fontSize: fs(14), fontFamily: 'monospace'}} />
       </View>
       {hexError && <Text style={{fontSize: fs(11), color: T.danger, marginBottom: 8}}>{t('modal.invalidHex')}</Text>}
-      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8}}>{PALETTE.map((c: string) => (<TouchableOpacity key={c} onPress={() => {set('color', c); setHexInput(c); setHexError(false);}} activeOpacity={0.8} accessibilityRole="button" accessibilityState={{selected: f.color === c}} accessibilityLabel={c} style={{width: 30, height: 30, borderRadius: 8, backgroundColor: c, borderWidth: 2, borderColor: f.color === c ? '#fff' : 'transparent'}} />))}</View>
+      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8}}>
+        <TouchableOpacity onPress={() => set('avatarTransparent', !f.avatarTransparent)} activeOpacity={0.8}
+          accessibilityRole="switch" accessibilityState={{checked: !!f.avatarTransparent}} accessibilityLabel={t('modal.transparentColor')}
+          style={{width: 30, height: 30, borderRadius: 8, backgroundColor: 'transparent', borderWidth: 2, borderColor: f.avatarTransparent ? '#fff' : T.border, alignItems: 'center', justifyContent: 'center'}}>
+          <Text style={{fontSize: 15, color: f.avatarTransparent ? '#fff' : T.dim}} allowFontScaling={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">⊘</Text>
+        </TouchableOpacity>
+        {PALETTE.map((c: string) => (<TouchableOpacity key={c} onPress={() => {set('color', c); setHexInput(c); setHexError(false);}} activeOpacity={0.8} accessibilityRole="button" accessibilityState={{selected: f.color === c}} accessibilityLabel={c} style={{width: 30, height: 30, borderRadius: 8, backgroundColor: c, borderWidth: 2, borderColor: f.color === c ? '#fff' : 'transparent'}} />))}
+      </View>
       {isFronting && <Text style={{fontSize: fs(11), color: T.danger, lineHeight: 15, marginTop: 4}}>{t('members.frontingLockMsg')}</Text>}
     </Sheet>
   );

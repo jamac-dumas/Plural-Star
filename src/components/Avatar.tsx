@@ -38,7 +38,7 @@ export const Avatar = ({member, size = 28, pulse = false, T}: AvatarProps) => {
           height: size,
           borderRadius: radius,
           overflow: 'hidden',
-          backgroundColor: member?.color || T.toggleOff,
+          backgroundColor: member.avatarTransparent ? 'transparent' : (member?.color || T.toggleOff),
           ...pulseStyle,
         }}>
         <Image

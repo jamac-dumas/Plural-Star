@@ -7,7 +7,7 @@ import {Member, HistoryEntry, FrontState, FrontTierKey, fmtTime, fmtDur, allFron
 import {DateTimeEditor} from '../components/DateTimeEditor';
 import {Avatar} from '../components/Avatar';
 
-type HubTile = 'share' | 'retroHistory' | 'statistics' | 'chat' | 'customFields' | 'systemManager' | 'archive' | 'polls' | 'discord' | 'credits' | 'supportPS';
+type HubTile = 'share' | 'retroHistory' | 'statistics' | 'chat' | 'customFields' | 'systemManager' | 'archive' | 'polls' | 'systemMap' | 'medical' | 'discord' | 'credits' | 'supportPS';
 
 interface Props {
   theme: any;
@@ -25,6 +25,8 @@ interface Props {
   renderSystemManagerScreen: () => React.ReactNode;
   renderArchiveScreen: () => React.ReactNode;
   renderPollsScreen: () => React.ReactNode;
+  renderSystemMapScreen: () => React.ReactNode;
+  renderMedicalScreen: () => React.ReactNode;
   resetKey?: number;
   editHistoryIndex?: number | null;
   onClearEditHistory?: () => void;
@@ -368,7 +370,7 @@ const RetroHistoryScreen = ({T, members, history, front, onSaveHistory, onSetFro
 const DISCORD_URL = 'https://discord.gg/FFQw33cu8m';
 const BMC_URL = 'https://www.buymeacoffee.com/PluralStar';
 
-export const HubScreen = ({theme: T, singlet = false, selfId, members, history, front, onSaveHistory, onSetFront, renderShareScreen, renderStatsScreen, renderChatScreen, renderCustomFieldsScreen, renderSystemManagerScreen, renderArchiveScreen, renderPollsScreen, resetKey, editHistoryIndex, onClearEditHistory}: Props) => {
+export const HubScreen = ({theme: T, singlet = false, selfId, members, history, front, onSaveHistory, onSetFront, renderShareScreen, renderStatsScreen, renderChatScreen, renderCustomFieldsScreen, renderSystemManagerScreen, renderArchiveScreen, renderPollsScreen, renderSystemMapScreen, renderMedicalScreen, resetKey, editHistoryIndex, onClearEditHistory}: Props) => {
   const {t} = useTranslation();
   const fs = (s: number) => Math.round(s * (T.textScale || 1));
   const [activeTile, setActiveTile] = useState<HubTile | null>(null);
@@ -501,6 +503,34 @@ export const HubScreen = ({theme: T, singlet = false, selfId, members, history, 
     );
   }
 
+  if (activeTile === 'systemMap') {
+    return (
+      <View style={{flex: 1, backgroundColor: T.bg}}>
+        <View style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8}}>
+          <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('common.back')} style={{padding: 4, marginRight: 12}}>
+            <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
+          </TouchableOpacity>
+          <Text accessibilityRole="header" style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('systemMap.title')}</Text>
+        </View>
+        {renderSystemMapScreen()}
+      </View>
+    );
+  }
+
+  if (activeTile === 'medical') {
+    return (
+      <View style={{flex: 1, backgroundColor: T.bg}}>
+        <View style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8}}>
+          <TouchableOpacity onPress={() => setActiveTile(null)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('common.back')} style={{padding: 4, marginRight: 12}}>
+            <Text style={{fontSize: fs(18), color: T.dim}}>←</Text>
+          </TouchableOpacity>
+          <Text accessibilityRole="header" style={{fontFamily: Fonts.display, fontSize: fs(22), fontWeight: '600', fontStyle: 'italic', color: T.text, flex: 1, marginRight: 8}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{t('medical.title')}</Text>
+        </View>
+        {renderMedicalScreen()}
+      </View>
+    );
+  }
+
   if (activeTile === 'credits') {
     const credits: {name: string; role: string; url: string}[] = [
       {name: 'The Loud House System', role: t('hub.creditLogo'), url: 'https://x.com/theloudhousesys?s=21'},
@@ -532,18 +562,20 @@ export const HubScreen = ({theme: T, singlet = false, selfId, members, history, 
   }
 
   const tiles: {id: HubTile; icon: string; label: string; external?: boolean}[] = [
-    {id: 'share', icon: '⇅', label: t('hub.importExport')},
     {id: 'retroHistory', icon: '◷', label: t('hub.retroHistory')},
+    {id: 'medical', icon: '⚕', label: t('medical.title')},
     {id: 'statistics', icon: '⊞', label: t('hub.statistics')},
     {id: 'chat', icon: '⌨', label: t('hub.systemChat')},
+    {id: 'polls', icon: '📊', label: t('polls.title')},
+    {id: 'systemMap', icon: '🕸', label: t('systemMap.title')},
     {id: 'customFields', icon: '☰', label: t('customFields.title')},
     {id: 'systemManager', icon: '🗂', label: t('systemManager.title')},
     {id: 'archive', icon: '🗃', label: t('hub.archive')},
-    {id: 'polls', icon: '📊', label: t('polls.title')},
+    {id: 'share', icon: '⇅', label: t('hub.importExport')},
     {id: 'credits', icon: '✦', label: t('hub.credits')},
     {id: 'discord', icon: '💬', label: t('hub.discord'), external: true},
     {id: 'supportPS', icon: '☕', label: t('hub.supportPS'), external: true},
-  ].filter(tile => !singlet || (tile.id !== 'chat' && tile.id !== 'systemManager' && tile.id !== 'customFields' && tile.id !== 'polls' && tile.id !== 'archive')) as {id: HubTile; icon: string; label: string; external?: boolean}[];
+  ].filter(tile => !singlet || (tile.id !== 'chat' && tile.id !== 'systemManager' && tile.id !== 'customFields' && tile.id !== 'polls' && tile.id !== 'archive' && tile.id !== 'systemMap')) as {id: HubTile; icon: string; label: string; external?: boolean}[];
 
   const handleTilePress = (tile: typeof tiles[0]) => {
     if (tile.external && tile.id === 'discord') {
@@ -564,12 +596,18 @@ export const HubScreen = ({theme: T, singlet = false, selfId, members, history, 
         maxFontSizeMultiplier={1.2}>
         {t('hub.title')}
       </Text>
-      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 10}}>
+      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'space-between', alignItems: 'flex-start'}}>
         {tiles.map(tile => (
           <TouchableOpacity key={tile.id} onPress={() => handleTilePress(tile)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={tile.label}
             style={{width: '31%', aspectRatio: 1, borderRadius: 14, borderWidth: 1, backgroundColor: T.card, borderColor: T.border, alignItems: 'center', justifyContent: 'center', padding: 10}}>
-            <Text style={{fontSize: fs(28), color: T.accent, marginBottom: 8}}>{tile.icon}</Text>
-            <Text style={{fontSize: fs(11), fontWeight: '600', color: T.text, textAlign: 'center'}} numberOfLines={2}>{tile.label}</Text>
+            <View style={{flex: 1, alignSelf: 'stretch'}}>
+              <View style={{flex: 1, alignItems: 'center', justifyContent: 'flex-end', paddingBottom: 4}}>
+                <Text style={{fontSize: fs(26), lineHeight: fs(28), color: T.accent, textAlign: 'center', includeFontPadding: false}}>{tile.icon}</Text>
+              </View>
+              <View style={{flex: 1, alignItems: 'center', justifyContent: 'flex-start', paddingTop: 4}}>
+                <Text style={{fontSize: fs(11), lineHeight: fs(14), fontWeight: '600', color: T.text, textAlign: 'center', includeFontPadding: false}} numberOfLines={2}>{tile.label}</Text>
+              </View>
+            </View>
           </TouchableOpacity>
         ))}
       </View>

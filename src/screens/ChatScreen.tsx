@@ -445,7 +445,7 @@ export const ChatScreen = ({theme: T, members, channels, onSaveChannels, onMenti
             style={{backgroundColor: T.bg, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, fontSize: fs(13), marginBottom: 6}} />
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={{flexDirection: 'row', gap: 6}}>
-              {sortMembersBySearch(members.filter(m => !m.archived && (!memberSearch || m.name.toLowerCase().includes(memberSearch.toLowerCase()))), memberSearch).map(m => (
+              {sortMembersBySearch(members.filter(m => !m.archived && !m.isCustomFront && (!memberSearch || m.name.toLowerCase().includes(memberSearch.toLowerCase()))), memberSearch).map(m => (
                 <TouchableOpacity key={m.id} onPress={() => {setActiveMemberId(m.id); setShowMemberPicker(false); setMemberSearch('');}} activeOpacity={0.7}
                   accessibilityRole="button" accessibilityState={{selected: activeMemberId === m.id}} accessibilityLabel={m.name}
                   style={{flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1,

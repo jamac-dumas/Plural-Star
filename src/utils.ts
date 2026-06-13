@@ -1,3 +1,4 @@
+import {Platform, Dimensions, PixelRatio} from 'react-native';
 import i18n from './i18n/i18n';
 import type {SupportedLanguage} from './i18n/i18n';
 
@@ -55,9 +56,7 @@ export const ancestorsOf = (nodes: MemberGroup[], id: string): MemberGroup[] => 
   return out;
 };
 
-// True if `candidateId` is `ofId` itself or any descendant of it — used to block
-// re-parenting a node into its own subtree (which would create a cycle).
-export const isDescendant = (nodes: MemberGroup[], candidateId: string, ofId: string): boolean => {
+export const isDescendant =(nodes: MemberGroup[], candidateId: string, ofId: string): boolean => {
   if (candidateId === ofId) return true;
   return descendantsOf(nodes, ofId).some(n => n.id === candidateId);
 };
@@ -118,6 +117,7 @@ export interface Member {
   groupIds?: string[];
   archived?: boolean;
   avatar?: string;
+  avatarTransparent?: boolean;
   banner?: string;
   customFields?: CustomFieldValue[];
   sortOrder?: number;
@@ -142,6 +142,160 @@ export const makeDefaultCustomFronts = (): Member[] =>
     tags: [],
     groupIds: [],
   }));
+
+export interface RelationshipTypeDef {
+  id: string;
+  name: string;
+  inverseName?: string;
+  directional: boolean;
+  color?: string;
+  preset?: boolean;
+}
+
+export interface Medication {
+  id: string;
+  name: string;
+  dosage?: string;
+  times: string[];
+  enabled: boolean;
+  notes?: string;
+  createdAt: number;
+}
+
+export interface MedicalAppointment {
+  id: string;
+  title: string;
+  time: number;
+  location?: string;
+  notes?: string;
+  reminderMinutesBefore?: number;
+  createdAt: number;
+}
+
+export interface MedicalHistoryEntry {
+  id: string;
+  title: string;
+  date?: number;
+  notes?: string;
+  createdAt: number;
+}
+
+export interface EmergencyInfo {
+  conditions?: string;
+  allergies?: string;
+  bloodType?: string;
+  notes?: string;
+  showOnNotification: boolean;
+}
+
+export interface MedicalData {
+  medications: Medication[];
+  appointments: MedicalAppointment[];
+  history: MedicalHistoryEntry[];
+  emergency: EmergencyInfo;
+}
+
+export const DEFAULT_MEDICAL: MedicalData = {
+  medications: [],
+  appointments: [],
+  history: [],
+  emergency: {showOnNotification: false},
+};
+
+export const isValidTimeHHMM = (v: string): boolean =>
+  /^([01]?\d|2[0-3]):[0-5]\d$/.test(v.trim());
+
+export const emergencyNotificationLine = (e: EmergencyInfo | undefined): string | null => {
+  if (!e || !e.showOnNotification) return null;
+  const parts = [e.conditions, e.allergies, e.bloodType].map(x => (x || '').trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  return `⚕ ${parts.join(' · ')}`;
+};
+
+export interface DeviceCodes {
+  friendCode: string;
+  syncCode: string;
+  createdAt: number;
+}
+
+export const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+let codeState = 0;
+
+const seedCodeState = (): number => {
+  let h = 2166136261;
+  const mix = (n: number) => {
+    h = (h ^ (Math.floor(Math.abs(n)) & 0xffffffff)) >>> 0;
+    h = Math.imul(h, 16777619) >>> 0;
+  };
+  const screen = Dimensions.get('screen');
+  const perf = (globalThis as any)?.performance?.now?.() ?? 0;
+  mix(Date.now());
+  mix(perf * 1000);
+  mix(Math.random() * 0xffffffff);
+  mix(Math.random() * 0xffffffff);
+  mix(Math.random() * 0xffffffff);
+  mix(screen.width * 10000 + screen.height);
+  mix(PixelRatio.get() * 1000);
+  mix(new Date().getTimezoneOffset() + 720);
+  mix(Platform.OS === 'ios' ? 0x1f3 : 0x2e7);
+  mix(typeof Platform.Version === 'number' ? Platform.Version : `${Platform.Version}`.split('').reduce((a, c) => a + c.charCodeAt(0), 0));
+  return h >>> 0;
+};
+
+const nextCodeChar = (): string => {
+  if (codeState === 0) codeState = seedCodeState();
+  codeState = (codeState ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+  codeState = Math.imul(codeState ^ (codeState >>> 15), 2246822519) >>> 0;
+  codeState = Math.imul(codeState ^ (codeState >>> 13), 3266489917) >>> 0;
+  codeState = (codeState ^ (codeState >>> 16)) >>> 0;
+  return CODE_ALPHABET[codeState % CODE_ALPHABET.length];
+};
+
+const randomCodeGroup = (len: number): string => {
+  let out = '';
+  for (let i = 0; i < len; i++) out += nextCodeChar();
+  return out;
+};
+
+export const generateFriendCode = (): string =>
+  `${randomCodeGroup(4)}-${randomCodeGroup(4)}-${randomCodeGroup(4)}`;
+
+export const generateSyncCode = (): string =>
+  `${randomCodeGroup(5)}-${randomCodeGroup(5)}-${randomCodeGroup(5)}-${randomCodeGroup(5)}`;
+
+export const DEFAULT_REL_COLOR = '#8A94A6';
+
+export const RELATIONSHIP_COLOR_CHOICES = ['#E05B5B', '#5BBF7A', '#D9B84A', '#E87BA8'];
+
+export interface Relationship {
+  id: string;
+  fromId: string;
+  toId: string;
+  typeId: string;
+  note?: string;
+  createdAt: number;
+}
+
+export const PRESET_RELATIONSHIP_TYPES: RelationshipTypeDef[] = [
+  {id: 'love', name: 'Love', directional: false, color: '#E87BA8', preset: true},
+  {id: 'friend', name: 'Friend', directional: false, color: '#5BBF7A', preset: true},
+  {id: 'ally', name: 'Ally', directional: false, color: '#D9B84A', preset: true},
+  {id: 'rival', name: 'Rival', directional: false, color: '#E05B5B', preset: true},
+];
+
+export const allRelationshipTypes = (customTypes: RelationshipTypeDef[]): RelationshipTypeDef[] =>
+  [...PRESET_RELATIONSHIP_TYPES, ...customTypes];
+
+export const relationshipDegrees = (memberIds: string[], relationships: Relationship[]): Record<string, number> => {
+  const degrees: Record<string, number> = {};
+  for (const id of memberIds) degrees[id] = 0;
+  for (const r of relationships) {
+    if (degrees[r.fromId] !== undefined) degrees[r.fromId] += 1;
+    if (degrees[r.toId] !== undefined) degrees[r.toId] += 1;
+  }
+  return degrees;
+};
 
 export type HistoryChangeType = 'front' | 'mood' | 'location' | 'note';
 export type FrontTierKey = 'primary' | 'coFront' | 'coConscious';
@@ -257,6 +411,9 @@ export interface ExportPayload {
   noteboards?: NoteboardEntry[];
   polls?: MemberPoll[];
   journalTemplates?: JournalTemplate[];
+  relationships?: Relationship[];
+  relationshipTypes?: RelationshipTypeDef[];
+  medical?: MedicalData;
 }
 
 export type ChatMessageType = 'text' | 'image' | 'file' | 'reply' | 'reaction';

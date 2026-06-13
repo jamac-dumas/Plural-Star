@@ -67,7 +67,6 @@ export const StatsScreen = ({theme: T, history, members, chatMessages, singlet =
   const stats = useMemo(() => {
     const customFrontIds = new Set(members.filter(m => m.isCustomFront).map(m => m.id));
     const hiddenStatusIds = new Set(members.filter(m => m.isCustomFront && SINGLET_HIDDEN_STATUS_NAMES.includes(m.name)).map(m => m.id));
-    // In singlet mode, statuses (custom fronts) are what gets ranked; the self profile is excluded.
     const rankExclude = (id: string): boolean => singlet
       ? (id === selfId || !customFrontIds.has(id) || hiddenStatusIds.has(id))
       : customFrontIds.has(id);
@@ -81,15 +80,23 @@ export const StatsScreen = ({theme: T, history, members, chatMessages, singlet =
     const moodCounts: Record<string, number> = {};
     const locCounts: Record<string, number> = {};
 
-    filteredHistory.forEach(e => {
+    const lastSeen: Record<string, {end: number | null; tier: string}> = {};
+    [...filteredHistory].sort((a, b) => a.startTime - b.startTime).forEach(e => {
       const dur = entryDur(e);
+      const entryEnd = e.endTime ?? effEnd(e) ?? null;
+      const isNewSession = (id: string, tier: string): boolean => {
+        const prev = lastSeen[id];
+        const contiguous = !!prev && prev.tier === tier && prev.end !== null && Math.abs(e.startTime - prev.end) <= 1000;
+        lastSeen[id] = {end: entryEnd, tier};
+        return !contiguous;
+      };
       (e.memberIds || []).forEach(id => {
         if (!frontCounts[id]) frontCounts[id] = {time: 0, sessions: 0};
         frontCounts[id].time += dur;
-        frontCounts[id].sessions += 1;
+        if (isNewSession(id, 'primary')) frontCounts[id].sessions += 1;
       });
-      (e.coFrontIds || []).forEach(id => { coFrontCounts[id] = (coFrontCounts[id] || 0) + 1; });
-      (e.coConsciousIds || []).forEach(id => { coConCounts[id] = (coConCounts[id] || 0) + 1; });
+      (e.coFrontIds || []).forEach(id => { if (isNewSession(id, 'coFront')) coFrontCounts[id] = (coFrontCounts[id] || 0) + 1; });
+      (e.coConsciousIds || []).forEach(id => { if (isNewSession(id, 'coConscious')) coConCounts[id] = (coConCounts[id] || 0) + 1; });
       if (e.mood) moodCounts[e.mood] = (moodCounts[e.mood] || 0) + 1;
       if (e.location) locCounts[e.location] = (locCounts[e.location] || 0) + 1;
     });
@@ -194,6 +201,7 @@ export const StatsScreen = ({theme: T, history, members, chatMessages, singlet =
     const limit = limitFor(boardKey);
     const shown = entries.slice(0, limit);
     const max = Math.max(...shown.map(([, v]) => v), 1);
+    const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
     return (
       <View style={{marginBottom: 18}}>
         <Text accessibilityRole="header" style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8}}>{title}</Text>
@@ -211,7 +219,7 @@ export const StatsScreen = ({theme: T, history, members, chatMessages, singlet =
                   <Text style={{flex: 1, fontSize: fs(13), color: T.text, fontWeight: '500'}} numberOfLines={1}>
                     {member ? member.name : (formatKey ? formatKey(key) : key)}
                   </Text>
-                  <Text style={{fontSize: fs(12), color: T.accent, fontWeight: '600'}}>{renderValue(value)}</Text>
+                  <Text style={{fontSize: fs(12), color: T.accent, fontWeight: '600'}}>{`${((value / total) * 100).toFixed(1)}% / ${renderValue(value)}`}</Text>
                 </View>
                 <View style={{height: 6, borderRadius: 3, backgroundColor: T.surface, overflow: 'hidden'}}>
                   <View style={{height: 6, width: `${pct}%`, borderRadius: 3, backgroundColor: barColor}} />
@@ -230,6 +238,7 @@ export const StatsScreen = ({theme: T, history, members, chatMessages, singlet =
     const limit = limitFor('fronters');
     const shown = stats.topFronters.slice(0, limit);
     const maxT = Math.max(...shown.map(e => e.time), 1);
+    const totalT = stats.topFronters.reduce((s, e) => s + e.time, 0) || 1;
     return (
       <View style={{marginBottom: 18}}>
         <Text accessibilityRole="header" style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8}}>{singlet ? t('stats.topStatuses') : t('stats.topFronters')}</Text>
@@ -248,7 +257,7 @@ export const StatsScreen = ({theme: T, history, members, chatMessages, singlet =
                     <Text style={{fontSize: fs(13), color: T.text, fontWeight: '500'}} numberOfLines={1}>{member ? member.name : entry.id}</Text>
                     <Text style={{fontSize: fs(10), color: T.muted}}>{entry.sessions} {t('stats.sessions').toLowerCase()}</Text>
                   </View>
-                  <Text style={{fontSize: fs(12), color: T.accent, fontWeight: '600'}}>{fmtDur(0, entry.time)}</Text>
+                  <Text style={{fontSize: fs(12), color: T.accent, fontWeight: '600'}}>{`${((entry.time / totalT) * 100).toFixed(1)}% / ${fmtDur(0, entry.time)}`}</Text>
                 </View>
                 <View style={{height: 6, borderRadius: 3, backgroundColor: T.surface, overflow: 'hidden'}}>
                   <View style={{height: 6, width: `${pct}%`, borderRadius: 3, backgroundColor: barColor}} />
