@@ -3,6 +3,8 @@ import {View, ScrollView, TouchableOpacity, Alert, KeyboardAvoidingView, Accessi
 import {Text, TextInput} from '../components/AppText';
 import {useTranslation} from 'react-i18next';
 import {PALETTE} from '../theme';
+import {ColorPicker} from '../components/ColorPicker';
+import {Avatar} from '../components/Avatar';
 import {useKeyboardBehavior} from '../hooks/useKeyboardBehavior';
 import {Member, MemberGroup, GroupNodeKind, uid, childrenOf, descendantsOf, isDescendant, groupKind, groupParent} from '../utils';
 
@@ -11,9 +13,10 @@ interface Props {
   members: Member[];
   groups: MemberGroup[];
   onSaveGroups: (g: MemberGroup[]) => void;
+  onViewMember?: (id: string) => void;
 }
 
-export const SystemManagerScreen = ({theme: T, members, groups, onSaveGroups}: Props) => {
+export const SystemManagerScreen = ({theme: T, members, groups, onSaveGroups, onViewMember}: Props) => {
   const {t} = useTranslation();
   const fs = (s: number) => Math.round(s * (T.textScale || 1));
   const behavior = useKeyboardBehavior();
@@ -21,11 +24,14 @@ export const SystemManagerScreen = ({theme: T, members, groups, onSaveGroups}: P
   const [newName, setNewName] = useState('');
   const [newColor, setNewColor] = useState(PALETTE[0]);
   const [newKind, setNewKind] = useState<GroupNodeKind>('group');
+  const [showNewColor, setShowNewColor] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editColor, setEditColor] = useState<string>(PALETTE[0]);
   const [movingIds, setMovingIds] = useState<string[] | null>(null);
   const [selectMode, setSelectMode] = useState(false);
+  const [browse, setBrowse] = useState(false);
+  const [browseId, setBrowseId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const addNode = () => {
@@ -218,15 +224,81 @@ export const SystemManagerScreen = ({theme: T, members, groups, onSaveGroups}: P
             </>
           )}
         </View>
+        {isEditing && (
+          <View style={{paddingLeft: depth * 16 + 24, paddingRight: 8, marginBottom: 10}}>
+            <ColorPicker value={editColor} onChange={setEditColor} T={T} />
+          </View>
+        )}
         {childrenOf(groups, g.id).map(c => renderNode(c, depth + 1))}
       </View>
     );
   };
 
+  const browseEligible = members.filter(m => !m.archived && !m.isCustomFront);
+  if (browse) {
+    const folders = childrenOf(groups, browseId);
+    const folderMembers = browseId === null
+      ? browseEligible.filter(m => !(m.groupIds || []).length)
+      : browseEligible.filter(m => (m.groupIds || []).includes(browseId));
+    const current = browseId ? groups.find(g => g.id === browseId) || null : null;
+    return (
+      <ScrollView style={{flex: 1, backgroundColor: T.bg}} contentContainerStyle={{padding: 16, paddingBottom: 120}}>
+        <View style={{flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14}}>
+          {browseId !== null && (
+            <TouchableOpacity onPress={() => setBrowseId(current?.parentId ?? null)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('common.back')} style={{padding: 4}}>
+              <Text style={{fontSize: fs(18), color: T.dim}} allowFontScaling={false}>←</Text>
+            </TouchableOpacity>
+          )}
+          <Text accessibilityRole="header" style={{flex: 1, fontSize: fs(16), fontWeight: '600', color: current?.color || T.text}} numberOfLines={1}>{current ? current.name : t('systemManager.title')}</Text>
+          <TouchableOpacity onPress={() => setBrowse(false)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('common.edit')}
+            style={{paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, borderWidth: 1, backgroundColor: T.surface, borderColor: T.border}}>
+            <Text style={{fontSize: fs(11), color: T.dim}}>{t('common.edit')}</Text>
+          </TouchableOpacity>
+        </View>
+        {folders.map(g => {
+          const cnt = browseEligible.filter(m => (m.groupIds || []).includes(g.id)).length;
+          const subs = childrenOf(groups, g.id).length;
+          return (
+            <TouchableOpacity key={g.id} onPress={() => setBrowseId(g.id)} activeOpacity={0.7}
+              accessibilityRole="button" accessibilityLabel={`${g.name}, ${groupKind(g) === 'subsystem' ? t('memberGroups.subsystem') : t('memberGroups.group')}, ${cnt}`}
+              style={{flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: T.border, backgroundColor: T.card, marginBottom: 8}}>
+              <View style={{width: 16, height: 16, borderRadius: groupKind(g) === 'subsystem' ? 4 : 8, backgroundColor: g.color || T.accent}} />
+              <Text style={{flex: 1, fontSize: fs(14), fontWeight: '500', color: T.text}} numberOfLines={1}>{g.name}</Text>
+              <Text style={{fontSize: fs(11), color: T.muted}}>{subs > 0 ? `${subs} ⊟ · ` : ''}{cnt}</Text>
+              <Text style={{fontSize: fs(16), color: T.dim}} allowFontScaling={false}>›</Text>
+            </TouchableOpacity>
+          );
+        })}
+        {folderMembers.map(m => (
+          <TouchableOpacity key={m.id} onPress={() => onViewMember && onViewMember(m.id)} activeOpacity={0.7}
+            accessibilityRole="button" accessibilityLabel={[m.name, m.pronouns, m.role].filter(Boolean).join(', ')}
+            style={{flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, paddingHorizontal: 8, borderRadius: 10, marginBottom: 4}}>
+            <Avatar member={m} size={30} T={T} />
+            <View style={{flex: 1}}>
+              <Text style={{fontSize: fs(14), color: T.text}} numberOfLines={1}>{m.name}</Text>
+              {[m.pronouns, m.role].filter(Boolean).length > 0 ? <Text style={{fontSize: fs(11), color: T.dim}} numberOfLines={1}>{[m.pronouns, m.role].filter(Boolean).join(' · ')}</Text> : null}
+            </View>
+          </TouchableOpacity>
+        ))}
+        {folders.length === 0 && folderMembers.length === 0 && (
+          <Text style={{fontSize: fs(12), color: T.muted, fontStyle: 'italic', marginTop: 8}}>{t('memberGroups.none')}</Text>
+        )}
+      </ScrollView>
+    );
+  }
+
   return (
     <KeyboardAvoidingView style={{flex: 1}} behavior={behavior}>
     <ScrollView style={{flex: 1, backgroundColor: T.bg}} contentContainerStyle={{padding: 16, paddingBottom: 120}} keyboardShouldPersistTaps="handled">
       <Text style={{fontSize: fs(11), color: T.dim, marginBottom: 14, lineHeight: 18}}>{t('systemManager.desc')}</Text>
+      <View style={{flexDirection: 'row', marginBottom: 12}}>
+        <TouchableOpacity onPress={() => { setBrowseId(null); setBrowse(true); }} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('systemManager.browse')}
+          style={{flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1, backgroundColor: T.surface, borderColor: T.border}}>
+          <Text style={{fontSize: fs(13)}} allowFontScaling={false}>🗂</Text>
+          <Text style={{fontSize: fs(12), fontWeight: '500', color: T.dim}}>{t('systemManager.browse')}</Text>
+        </TouchableOpacity>
+        <View style={{flex: 1}} />
+      </View>
       {groups.length > 0 && !movingIds && (
         <View style={{flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12}}>
           {selectMode ? (
@@ -266,9 +338,9 @@ export const SystemManagerScreen = ({theme: T, members, groups, onSaveGroups}: P
       {childrenOf(groups, null).map(g => renderNode(g, 0))}
       {groups.length === 0 && <Text style={{fontSize: fs(12), color: T.muted, fontStyle: 'italic', marginBottom: 10}}>{t('memberGroups.none')}</Text>}
       <View style={{flexDirection: 'row', gap: 6, alignItems: 'center', marginTop: 8}}>
-        <TouchableOpacity onPress={() => { const idx = PALETTE.indexOf(newColor); setNewColor(PALETTE[(idx + 1) % PALETTE.length]); }}
-          accessibilityRole="button" accessibilityLabel={t('memberGroups.changeColor')}
-          style={{width: 28, height: 28, borderRadius: newKind === 'subsystem' ? 6 : 14, backgroundColor: newColor, borderWidth: 2, borderColor: 'rgba(255,255,255,0.15)'}} />
+        <TouchableOpacity onPress={() => setShowNewColor(s => !s)}
+          accessibilityRole="button" accessibilityState={{expanded: showNewColor}} accessibilityLabel={t('memberGroups.changeColor')}
+          style={{width: 28, height: 28, borderRadius: newKind === 'subsystem' ? 6 : 14, backgroundColor: newColor, borderWidth: 2, borderColor: showNewColor ? '#fff' : 'rgba(255,255,255,0.15)'}} />
         <TextInput value={newName} onChangeText={setNewName} placeholder={t('memberGroups.addPlaceholder')} placeholderTextColor={T.muted}
           style={{flex: 1, backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, fontSize: fs(13)}} onSubmitEditing={addNode} returnKeyType="done" />
         <TouchableOpacity onPress={() => setNewKind(k => k === 'group' ? 'subsystem' : 'group')} activeOpacity={0.7} accessibilityRole="button"
@@ -279,6 +351,11 @@ export const SystemManagerScreen = ({theme: T, members, groups, onSaveGroups}: P
           <Text style={{fontSize: fs(12), fontWeight: '500', color: T.accent}}>{t('common.add')}</Text>
         </TouchableOpacity>
       </View>
+      {showNewColor && (
+        <View style={{marginTop: 10, marginBottom: 4}}>
+          <ColorPicker value={newColor} onChange={setNewColor} T={T} />
+        </View>
+      )}
     </ScrollView>
     </KeyboardAvoidingView>
   );

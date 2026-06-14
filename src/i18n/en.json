@@ -133,6 +133,11 @@
     "moveUp": "Move up",
     "noCustomFronts": "No custom fronts yet.",
     "selectAction": "Select",
+    "displayFields": "Display Fields",
+    "fieldGroups": "Groups",
+    "fieldDescriptions": "Descriptions",
+    "fieldPronouns": "Pronouns",
+    "fieldRoles": "Roles",
     "title": "Members",
     "count": "{{count}} member",
     "count_other": "{{count}} members",
@@ -470,6 +475,7 @@
     "role": "Role / Archetype",
     "rolePlaceholder": "Host, Protector, Gatekeeper…",
     "color": "Color",
+    "hue": "Hue",
     "invalidHex": "Invalid hex color",
     "transparentColor": "Transparent",
     "removeImageMsg": "Remove this image?",
@@ -717,6 +723,7 @@
     "pickMember": "Mention a member"
   },
   "systemManager": {
+    "browse": "Browse",
     "deleteSelectedMsg": "Remove {{count}} selected item(s)? Members won't be deleted.",
     "desc": "Create, edit, rearrange, and delete groups and sub-systems. Tap ⇄ on an item, then a destination, to nest it.",
     "title": "System Manager"
@@ -771,6 +778,7 @@
   },
   "systemMap": {
     "connections": "Connections",
+    "showOnMap": "Show on Map",
     "addMember": "+ Member",
     "emptyMap": "The map is empty. Tap + Member to add members, or + Add Relationship to connect them.",
     "depth": "Connections out",

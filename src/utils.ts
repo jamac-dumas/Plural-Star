@@ -150,6 +150,7 @@ export interface RelationshipTypeDef {
   directional: boolean;
   color?: string;
   preset?: boolean;
+  overridden?: boolean;
 }
 
 export interface Medication {
@@ -284,8 +285,14 @@ export const PRESET_RELATIONSHIP_TYPES: RelationshipTypeDef[] = [
   {id: 'rival', name: 'Rival', directional: false, color: '#E05B5B', preset: true},
 ];
 
-export const allRelationshipTypes = (customTypes: RelationshipTypeDef[]): RelationshipTypeDef[] =>
-  [...PRESET_RELATIONSHIP_TYPES, ...customTypes];
+export const allRelationshipTypes = (customTypes: RelationshipTypeDef[]): RelationshipTypeDef[] => {
+  const overrides = new Map(customTypes.filter(t => t.preset).map(t => [t.id, t]));
+  const presets = PRESET_RELATIONSHIP_TYPES.map(p => {
+    const o = overrides.get(p.id);
+    return o ? {...p, ...o, overridden: true} : p;
+  });
+  return [...presets, ...customTypes.filter(t => !t.preset)];
+};
 
 export const relationshipDegrees = (memberIds: string[], relationships: Relationship[]): Record<string, number> => {
   const degrees: Record<string, number> = {};
@@ -390,6 +397,7 @@ export interface AppSettings {
   useDyslexicFont?: boolean;
   fontChoice?: import('./theme').FontChoice;
   customFrontsSeeded?: boolean;
+  memberListFields?: {groups?: boolean; descriptions?: boolean; pronouns?: boolean; roles?: boolean};
 }
 
 export interface ExportPayload {

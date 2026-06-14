@@ -2128,7 +2128,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           </View>
 
           <View style={{flexDirection: 'row', gap: 8, marginBottom: 6}}>
-            {[['↓ JSON', handleJSON, T.accentBg, T.accent, `${T.accent}40`], ['↓ HTML', handleHTML, T.infoBg, T.info, `${T.info}40`]].map(([label, fn, bg, color, border]: any) => (
+            {[['↓ ZIP', handleJSON, T.accentBg, T.accent, `${T.accent}40`], ['↓ HTML', handleHTML, T.infoBg, T.info, `${T.info}40`]].map(([label, fn, bg, color, border]: any) => (
               <TouchableOpacity key={label} onPress={fn} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={label} style={{flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 8, borderWidth: 1, backgroundColor: bg, borderColor: border}}>
                 <Text style={{fontSize: fs(14), fontWeight: '500', color}}>{label}</Text>
               </TouchableOpacity>
