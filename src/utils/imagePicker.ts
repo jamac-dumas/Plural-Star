@@ -17,13 +17,15 @@ const normalizePhotoQuality = (quality?: number): PhotoQuality => {
 };
 
 export const pickImageFromGallery = async (
-  opts: {includeBase64?: boolean; quality?: number} = {},
+  opts: {includeBase64?: boolean; quality?: number; maxWidth?: number; maxHeight?: number} = {},
 ): Promise<PickedImage | null> => {
   const result = await launchImageLibrary({
     mediaType: 'photo',
     selectionLimit: 1,
     includeBase64: opts.includeBase64 ?? false,
     quality: normalizePhotoQuality(opts.quality),
+    maxWidth: opts.maxWidth ?? 1280,
+    maxHeight: opts.maxHeight ?? 1280,
   });
   if (result.didCancel) return null;
   if (result.errorCode) {

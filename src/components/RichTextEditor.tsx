@@ -1,5 +1,6 @@
 import React, {useState, useMemo} from 'react';
-import {View, Text, TouchableOpacity, TextInput, StyleSheet, Platform, KeyboardAvoidingView, Modal, ScrollView} from 'react-native';
+import {View, TouchableOpacity, StyleSheet, Platform, KeyboardAvoidingView, Modal, ScrollView} from 'react-native';
+import {Text, TextInput} from './AppText';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {Fonts} from '../theme';
 import type {ThemeColors} from '../theme';
@@ -53,7 +54,7 @@ const MentionPicker = ({members, theme: T, onPick, onCancel}: {members: Member[]
   const [search, setSearch] = useState('');
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const active = members.filter(m => !m.archived);
+    const active = members.filter(m => !m.archived && !m.isCustomFront);
     if (!q) return active;
     return active.filter(m => m.name.toLowerCase().includes(q));
   }, [members, search]);
@@ -66,12 +67,12 @@ const MentionPicker = ({members, theme: T, onPick, onCancel}: {members: Member[]
           style={{backgroundColor: T.card, borderRadius: 12, borderWidth: 1, borderColor: T.border, maxHeight: '70%', overflow: 'hidden'}}>
           <View style={{padding: 12, borderBottomWidth: 1, borderBottomColor: T.border}}>
             <Text style={{fontSize: fs(11), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8}}>
-              {i18n.t('mention.pickMember', {defaultValue: 'Mention a member'})}
+              {i18n.t('mention.pickMember')}
             </Text>
             <TextInput
               value={search}
               onChangeText={setSearch}
-              placeholder={i18n.t('common.search', {defaultValue: 'Search…'})}
+              placeholder={i18n.t('common.search')}
               placeholderTextColor={T.muted}
               autoFocus
               autoCorrect={false}
@@ -84,7 +85,7 @@ const MentionPicker = ({members, theme: T, onPick, onCancel}: {members: Member[]
           <ScrollView keyboardShouldPersistTaps="handled" style={{maxHeight: 320}}>
             {filtered.length === 0 ? (
               <Text style={{fontSize: fs(13), color: T.muted, fontStyle: 'italic', textAlign: 'center', paddingVertical: 20}}>
-                {i18n.t('mention.noMembers', {defaultValue: 'No members match'})}
+                {i18n.t('mention.noMembers')}
               </Text>
             ) : (
               filtered.map(m => (
@@ -131,11 +132,11 @@ const MarkdownEditor = ({initialContent, theme: T, onSave, onClose, title, membe
     <View style={[s.container, {backgroundColor: T.bg, paddingTop: Platform.OS === 'ios' ? insets.top : 0}]}>
       <View style={[s.header, {borderBottomColor: T.border, backgroundColor: T.bg}]}>
         <TouchableOpacity onPress={onClose} activeOpacity={0.7} style={s.headerBtn}>
-          <Text style={{fontSize: fs(14), color: T.dim}}>{i18n.t('common.cancel')}</Text>
+          <Text style={{fontSize: fs(14), color: T.dim}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{i18n.t('common.cancel')}</Text>
         </TouchableOpacity>
-        <Text style={[s.headerTitle, {color: T.text}]}>{title}</Text>
+        <Text style={[s.headerTitle, {color: T.text, flex: 1, textAlign: 'center', marginHorizontal: 8}]} numberOfLines={1} maxFontSizeMultiplier={1.2}>{title}</Text>
         <TouchableOpacity onPress={handleSave} activeOpacity={0.7} style={[s.headerBtn, {alignItems: 'flex-end'}]}>
-          <Text style={{fontSize: fs(14), fontWeight: '600', color: T.accent}}>{i18n.t('common.save')}</Text>
+          <Text style={{fontSize: fs(14), fontWeight: '600', color: T.accent}} numberOfLines={1} maxFontSizeMultiplier={1.2}>{i18n.t('common.save')}</Text>
         </TouchableOpacity>
       </View>
       <View style={{flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: T.border, backgroundColor: T.surface}}>
@@ -168,19 +169,18 @@ const MarkdownEditor = ({initialContent, theme: T, onSave, onClose, title, membe
 };
 
 export const RichTextEditor = ({visible, title, initialContent, theme, onSave, onClose, members}: Props) => {
+  if (!visible) return null;
   return (
-    <Modal visible={visible} animationType="none" presentationStyle="fullScreen" onRequestClose={onClose}>
+    <Modal visible animationType="none" presentationStyle="fullScreen" onRequestClose={onClose}>
       <View style={{flex: 1, backgroundColor: theme.bg}}>
-        {visible && (
-          <MarkdownEditor
-            title={title}
-            initialContent={initialContent}
-            theme={theme}
-            onSave={onSave}
-            onClose={onClose}
-            members={members}
-          />
-        )}
+        <MarkdownEditor
+          title={title}
+          initialContent={initialContent}
+          theme={theme}
+          onSave={onSave}
+          onClose={onClose}
+          members={members}
+        />
       </View>
     </Modal>
   );

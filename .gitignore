@@ -33,6 +33,8 @@ build/
 local.properties
 *.iml
 *.hprof
+hs_err_pid*.log
+replay_pid*.log
 .cxx/
 *.keystore
 !debug.keystore

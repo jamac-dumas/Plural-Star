@@ -5,9 +5,11 @@ import notifee, {
   TriggerType,
   TimeUnit,
   IntervalTrigger,
+  TimestampTrigger,
+  RepeatFrequency,
 } from '@notifee/react-native';
 import {Platform} from 'react-native';
-import {FrontState, Member, fmtDur, fmtTime} from '../utils';
+import {FrontState, Member, Medication, MedicalAppointment, fmtDur, fmtTime} from '../utils';
 import {endFrontLiveActivity, updateFrontLiveActivity} from './LiveActivityService';
 import i18n from '../i18n/i18n';
 
@@ -37,6 +39,11 @@ export const setupReminderChannel = async () => {
   });
 };
 
+let emergencyLine: string | null = null;
+export const setEmergencyNotificationInfo = (line: string | null) => {
+  emergencyLine = line;
+};
+
 const resolveNames = (ids: string[], members: Member[]): string =>
   ids.map(id => members.find(m => m.id === id)?.name || '?').join(', ');
 
@@ -56,6 +63,73 @@ const getTierField = (front: any, tier: string, field: string): string | undefin
   return undefined;
 };
 
+const buildFrontContent = (front: FrontState, members: Member[]): {title: string; body: string; bigText: string} | null => {
+  const primaryIds = getTierIds(front, 'primary');
+  const coFrontIds = getTierIds(front, 'coFront');
+  const coConsciousIds = getTierIds(front, 'coConscious');
+
+  if (primaryIds.length === 0 && coFrontIds.length === 0 && coConsciousIds.length === 0) return null;
+
+  const primaryNames = resolveNames(primaryIds, members);
+  const coFrontNames = resolveNames(coFrontIds, members);
+  const coConsciousNames = resolveNames(coConsciousIds, members);
+
+  const duration = fmtDur(front.startTime);
+  const titleNames = primaryNames || coFrontNames || coConsciousNames ||
+    i18n.t('common.unknown', {defaultValue: 'Unknown'});
+  const title = `◈ ${titleNames}  ·  ${duration}`;
+
+  const lines: string[] = [];
+  if (primaryIds.length > 0)
+    lines.push(i18n.t('notification.primary', {names: primaryNames, defaultValue: `Primary: ${primaryNames}`}));
+  if (coFrontIds.length > 0)
+    lines.push(i18n.t('notification.coFront', {names: coFrontNames, defaultValue: `Co-Front: ${coFrontNames}`}));
+  if (coConsciousIds.length > 0)
+    lines.push(i18n.t('notification.coConscious', {names: coConsciousNames, defaultValue: `Co-Conscious: ${coConsciousNames}`}));
+
+  const primaryMood = getTierField(front, 'primary', 'mood');
+  const primaryLocation = getTierField(front, 'primary', 'location');
+  const primaryNote = getTierField(front, 'primary', 'note');
+
+  if (primaryMood)
+    lines.push(i18n.t('notification.mood', {mood: primaryMood, defaultValue: `Mood: ${primaryMood}`}));
+  if (primaryLocation)
+    lines.push(i18n.t('notification.at', {location: primaryLocation, defaultValue: `At: ${primaryLocation}`}));
+  if (primaryNote)
+    lines.push(i18n.t('notification.note', {note: primaryNote, defaultValue: `Note: ${primaryNote}`}));
+  lines.push(i18n.t('notification.since', {time: fmtTime(front.startTime), defaultValue: `Since ${fmtTime(front.startTime)}`}));
+
+  if (emergencyLine) lines.push(emergencyLine);
+
+  const summaryParts: string[] = [];
+  if (emergencyLine) summaryParts.push(emergencyLine);
+  if (coFrontIds.length > 0)
+    summaryParts.push(i18n.t('notification.cfShort', {names: coFrontNames, defaultValue: `CF: ${coFrontNames}`}));
+  if (coConsciousIds.length > 0)
+    summaryParts.push(i18n.t('notification.ccShort', {names: coConsciousNames, defaultValue: `CC: ${coConsciousNames}`}));
+  if (primaryMood)
+    summaryParts.push(i18n.t('notification.mood', {mood: primaryMood, defaultValue: `Mood: ${primaryMood}`}));
+  summaryParts.push(duration);
+
+  return {title, body: summaryParts.join('  ·  '), bigText: lines.join('\n')};
+};
+
+const frontAndroidConfig = (bigText: string) => ({
+  channelId: NOTIF_CHANNEL_ID,
+  ongoing: true,
+  onlyAlertOnce: true,
+  autoCancel: false,
+  smallIcon: 'ic_stat_notification',
+  importance: AndroidImportance.LOW,
+  visibility: AndroidVisibility.PUBLIC,
+  pressAction: {id: 'default'},
+  color: '#DAA520',
+  style: {
+    type: AndroidStyle.BIGTEXT as const,
+    text: bigText,
+  },
+});
+
 export const showFrontNotification = async (
   front: FrontState | null,
   members: Member[],
@@ -72,78 +146,61 @@ export const showFrontNotification = async (
       return;
     }
 
-    const primaryIds = getTierIds(front, 'primary');
-    const coFrontIds = getTierIds(front, 'coFront');
-    const coConsciousIds = getTierIds(front, 'coConscious');
-
-    if (primaryIds.length === 0 && coFrontIds.length === 0 && coConsciousIds.length === 0) {
+    const content = buildFrontContent(front, members);
+    if (!content) {
       await clearFrontNotification();
       return;
     }
 
     await setupNotificationChannel();
 
-    const primaryNames = resolveNames(primaryIds, members);
-    const coFrontNames = resolveNames(coFrontIds, members);
-    const coConsciousNames = resolveNames(coConsciousIds, members);
-
-    const duration = fmtDur(front.startTime);
-    const titleNames = primaryNames || coFrontNames || coConsciousNames ||
-      i18n.t('common.unknown', {defaultValue: 'Unknown'});
-    const title = `◈ ${titleNames}  ·  ${duration}`;
-
-    const lines: string[] = [];
-    if (primaryIds.length > 0)
-      lines.push(i18n.t('notification.primary', {names: primaryNames, defaultValue: `Primary: ${primaryNames}`}));
-    if (coFrontIds.length > 0)
-      lines.push(i18n.t('notification.coFront', {names: coFrontNames, defaultValue: `Co-Front: ${coFrontNames}`}));
-    if (coConsciousIds.length > 0)
-      lines.push(i18n.t('notification.coConscious', {names: coConsciousNames, defaultValue: `Co-Conscious: ${coConsciousNames}`}));
-
-    const primaryMood = getTierField(front, 'primary', 'mood');
-    const primaryLocation = getTierField(front, 'primary', 'location');
-    const primaryNote = getTierField(front, 'primary', 'note');
-
-    if (primaryMood)
-      lines.push(i18n.t('notification.mood', {mood: primaryMood, defaultValue: `Mood: ${primaryMood}`}));
-    if (primaryLocation)
-      lines.push(i18n.t('notification.at', {location: primaryLocation, defaultValue: `At: ${primaryLocation}`}));
-    if (primaryNote)
-      lines.push(i18n.t('notification.note', {note: primaryNote, defaultValue: `Note: ${primaryNote}`}));
-    lines.push(i18n.t('notification.since', {time: fmtTime(front.startTime), defaultValue: `Since ${fmtTime(front.startTime)}`}));
-
-    const summaryParts: string[] = [];
-    if (coFrontIds.length > 0)
-      summaryParts.push(i18n.t('notification.cfShort', {names: coFrontNames, defaultValue: `CF: ${coFrontNames}`}));
-    if (coConsciousIds.length > 0)
-      summaryParts.push(i18n.t('notification.ccShort', {names: coConsciousNames, defaultValue: `CC: ${coConsciousNames}`}));
-    if (primaryMood)
-      summaryParts.push(i18n.t('notification.mood', {mood: primaryMood, defaultValue: `Mood: ${primaryMood}`}));
-    summaryParts.push(duration);
-    const summary = summaryParts.join('  ·  ');
-
     await notifee.displayNotification({
       id: NOTIF_ID,
-      title,
-      body: summary,
-      android: {
-        channelId: NOTIF_CHANNEL_ID,
-        ongoing: true,
-        onlyAlertOnce: true,
-        autoCancel: false,
-        smallIcon: 'ic_stat_notification',
-        importance: AndroidImportance.LOW,
-        visibility: AndroidVisibility.PUBLIC,
-        pressAction: {id: 'default'},
-        color: '#DAA520',
-        style: {
-          type: AndroidStyle.BIGTEXT,
-          text: lines.join('\n'),
-        },
-      },
+      title: content.title,
+      body: content.body,
+      android: frontAndroidConfig(content.bigText),
     });
   } catch (e) {
     console.error('[PluralSpace] Notification error:', e);
+  }
+};
+
+export const scheduleFrontNotificationRefresh = async (
+  front: FrontState | null,
+  members: Member[],
+  intervalMinutes: number,
+) => {
+  try {
+    await cancelFrontNotificationRefresh();
+    if (Platform.OS !== 'android') return;
+    if (!front || !intervalMinutes || intervalMinutes < 15) return;
+    const content = buildFrontContent(front, members);
+    if (!content) return;
+    await setupNotificationChannel();
+    const trigger: IntervalTrigger = {
+      type: TriggerType.INTERVAL,
+      interval: intervalMinutes,
+      timeUnit: TimeUnit.MINUTES,
+    };
+    await notifee.createTriggerNotification(
+      {
+        id: NOTIF_ID,
+        title: content.title,
+        body: content.body,
+        android: frontAndroidConfig(content.bigText),
+      },
+      trigger,
+    );
+  } catch (e) {
+    console.error('[PluralSpace] Notification refresh schedule error:', e);
+  }
+};
+
+export const cancelFrontNotificationRefresh = async () => {
+  try {
+    await notifee.cancelTriggerNotification(NOTIF_ID);
+  } catch (e) {
+    console.error('[PluralSpace] Notification refresh cancel error:', e);
   }
 };
 
@@ -153,6 +210,7 @@ export const clearFrontNotification = async () => {
       await endFrontLiveActivity();
       return;
     }
+    try { await notifee.cancelTriggerNotification(NOTIF_ID); } catch {}
     await notifee.cancelNotification(NOTIF_ID);
     try { await notifee.stopForegroundService(); } catch {}
   } catch (e) {
@@ -160,33 +218,65 @@ export const clearFrontNotification = async () => {
   }
 };
 
-export const scheduleFrontCheckReminder = async (intervalHours: number) => {
+export const scheduleFrontCheckReminder = async (intervalHours: number, singlet = false) => {
   try {
     await cancelFrontCheckReminder();
     if (!intervalHours || intervalHours <= 0) return;
-    if (Platform.OS !== 'android') return;
-    await setupReminderChannel();
-    const trigger: IntervalTrigger = {
-      type: TriggerType.INTERVAL,
-      interval: intervalHours,
-      timeUnit: TimeUnit.HOURS,
+    const title = singlet
+      ? `◈ ${i18n.t('notification.statusCheck', {defaultValue: 'Status Check'})}`
+      : `◈ ${i18n.t('notification.frontCheck', {defaultValue: 'Front Check'})}`;
+    const body = singlet
+      ? i18n.t('notification.whatsYourStatus', {defaultValue: "What's your status right now?"})
+      : i18n.t('notification.whosFronting', {defaultValue: "Who's fronting right now?"});
+    const androidConfig = {
+      channelId: REMINDER_CHANNEL_ID,
+      smallIcon: 'ic_stat_notification',
+      importance: AndroidImportance.DEFAULT,
+      visibility: AndroidVisibility.PUBLIC,
+      pressAction: {id: 'default'},
+      color: '#DAA520',
     };
-    await notifee.createTriggerNotification(
-      {
-        id: FRONT_CHECK_NOTIF_ID,
-        title: `◈ ${i18n.t('notification.frontCheck', {defaultValue: 'Front Check'})}`,
-        body: i18n.t('notification.whosFronting', {defaultValue: "Who's fronting right now?"}),
-        android: {
-          channelId: REMINDER_CHANNEL_ID,
-          smallIcon: 'ic_stat_notification',
-          importance: AndroidImportance.DEFAULT,
-          visibility: AndroidVisibility.PUBLIC,
-          pressAction: {id: 'default'},
-          color: '#DAA520',
-        },
-      },
-      trigger,
-    );
+
+    if (Platform.OS === 'android') {
+      await setupReminderChannel();
+      const trigger: IntervalTrigger = {
+        type: TriggerType.INTERVAL,
+        interval: intervalHours,
+        timeUnit: TimeUnit.HOURS,
+      };
+      await notifee.createTriggerNotification(
+        {id: FRONT_CHECK_NOTIF_ID, title, body, android: androidConfig},
+        trigger,
+      );
+      return;
+    }
+
+    if (intervalHours === 1) {
+      const trigger: TimestampTrigger = {
+        type: TriggerType.TIMESTAMP,
+        timestamp: Date.now() + 60 * 60 * 1000,
+        repeatFrequency: RepeatFrequency.HOURLY,
+      };
+      await notifee.createTriggerNotification(
+        {id: FRONT_CHECK_NOTIF_ID, title, body},
+        trigger,
+      );
+      return;
+    }
+
+    const slots = 24 % intervalHours === 0 ? 24 / intervalHours : 1;
+    const effectiveInterval = 24 % intervalHours === 0 ? intervalHours : 24;
+    for (let i = 0; i < slots; i++) {
+      const trigger: TimestampTrigger = {
+        type: TriggerType.TIMESTAMP,
+        timestamp: Date.now() + effectiveInterval * (i + 1) * 60 * 60 * 1000,
+        repeatFrequency: RepeatFrequency.DAILY,
+      };
+      await notifee.createTriggerNotification(
+        {id: `${FRONT_CHECK_NOTIF_ID}-${i}`, title, body},
+        trigger,
+      );
+    }
   } catch (e) {
     console.error('[PluralSpace] Front-check schedule error:', e);
   }
@@ -195,6 +285,8 @@ export const scheduleFrontCheckReminder = async (intervalHours: number) => {
 export const cancelFrontCheckReminder = async () => {
   try {
     await notifee.cancelTriggerNotification(FRONT_CHECK_NOTIF_ID);
+    const ids = await notifee.getTriggerNotificationIds();
+    await Promise.all(ids.filter(id => id.startsWith(`${FRONT_CHECK_NOTIF_ID}-`)).map(id => notifee.cancelTriggerNotification(id)));
   } catch (e) {
     console.error('[PluralSpace] Front-check cancel error:', e);
   }
@@ -247,5 +339,129 @@ export const clearNoteboardNotification = async () => {
     await notifee.cancelNotification(NOTEBOARD_NOTIF_ID);
   } catch (e) {
     console.error('[PluralSpace] Noteboard notification clear error:', e);
+  }
+};
+
+const MED_ID_PREFIX = 'ps-med-';
+const APPT_ID_PREFIX = 'ps-appt-';
+
+const nextDailyOccurrence = (hhmm: string): number => {
+  const [hh, mm] = hhmm.split(':').map(Number);
+  const next = new Date();
+  next.setHours(hh, mm, 0, 0);
+  if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
+  return next.getTime();
+};
+
+const cancelTriggersWithPrefix = async (prefix: string) => {
+  try {
+    const ids = await notifee.getTriggerNotificationIds();
+    await Promise.all(ids.filter(id => id.startsWith(prefix)).map(id => notifee.cancelTriggerNotification(id)));
+  } catch (e) {
+    console.error('[PluralSpace] Trigger cancel error:', e);
+  }
+};
+
+export const rescheduleMedicationReminders = async (medications: Medication[]) => {
+  try {
+    await cancelTriggersWithPrefix(MED_ID_PREFIX);
+    await setupReminderChannel();
+    for (const med of medications) {
+      if (!med.enabled) continue;
+      for (let i = 0; i < med.times.length; i++) {
+        const trigger: TimestampTrigger = {
+          type: TriggerType.TIMESTAMP,
+          timestamp: nextDailyOccurrence(med.times[i]),
+          repeatFrequency: RepeatFrequency.DAILY,
+        };
+        await notifee.createTriggerNotification(
+          {
+            id: `${MED_ID_PREFIX}${med.id}-${i}`,
+            title: `💊 ${i18n.t('medical.medReminderTitle', {defaultValue: 'Medication Reminder'})}`,
+            body: [med.name, med.dosage].filter(Boolean).join(' · '),
+            android: {
+              channelId: REMINDER_CHANNEL_ID,
+              smallIcon: 'ic_stat_notification',
+              importance: AndroidImportance.DEFAULT,
+              visibility: AndroidVisibility.PUBLIC,
+              pressAction: {id: 'default'},
+              color: '#DAA520',
+            },
+          },
+          trigger,
+        );
+      }
+    }
+  } catch (e) {
+    console.error('[PluralSpace] Medication reminder schedule error:', e);
+  }
+};
+
+export const rescheduleAppointmentReminders = async (appointments: MedicalAppointment[]) => {
+  try {
+    await cancelTriggersWithPrefix(APPT_ID_PREFIX);
+    await setupReminderChannel();
+    for (const appt of appointments) {
+      const fireAt = appt.time - (appt.reminderMinutesBefore || 0) * 60 * 1000;
+      if (fireAt <= Date.now()) continue;
+      const trigger: TimestampTrigger = {
+        type: TriggerType.TIMESTAMP,
+        timestamp: fireAt,
+      };
+      await notifee.createTriggerNotification(
+        {
+          id: `${APPT_ID_PREFIX}${appt.id}`,
+          title: `📅 ${i18n.t('medical.apptReminderTitle', {defaultValue: 'Appointment Reminder'})}`,
+          body: [appt.title, fmtTime(appt.time), appt.location].filter(Boolean).join(' · '),
+          android: {
+            channelId: REMINDER_CHANNEL_ID,
+            smallIcon: 'ic_stat_notification',
+            importance: AndroidImportance.DEFAULT,
+            visibility: AndroidVisibility.PUBLIC,
+            pressAction: {id: 'default'},
+            color: '#DAA520',
+          },
+        },
+        trigger,
+      );
+    }
+  } catch (e) {
+    console.error('[PluralSpace] Appointment reminder schedule error:', e);
+  }
+};
+
+export const showChatPingNotification = async (
+  channelName: string,
+  speakerName: string,
+  preview: string,
+) => {
+  try {
+    if (Platform.OS !== 'android') return;
+    await setupReminderChannel();
+    const safePreview = (preview || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+    const title = i18n.t('notification.chatPingTitle', {
+      speaker: speakerName,
+      channel: channelName,
+      defaultValue: `◆ ${speakerName} pinged you in #${channelName}`,
+    });
+    const body = safePreview
+      ? i18n.t('notification.chatPingBody', {preview: safePreview, defaultValue: safePreview})
+      : i18n.t('notification.chatPingBodyEmpty', {defaultValue: 'Tap to view the message.'});
+    await notifee.displayNotification({
+      id: `ps-chat-ping-${Date.now()}`,
+      title,
+      body,
+      android: {
+        channelId: REMINDER_CHANNEL_ID,
+        smallIcon: 'ic_stat_notification',
+        importance: AndroidImportance.DEFAULT,
+        visibility: AndroidVisibility.PUBLIC,
+        pressAction: {id: 'default'},
+        color: '#DAA520',
+        style: safePreview ? {type: AndroidStyle.BIGTEXT, text: safePreview} : undefined,
+      },
+    });
+  } catch (e) {
+    console.error('[PluralSpace] Chat ping notification error:', e);
   }
 };

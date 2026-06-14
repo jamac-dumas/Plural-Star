@@ -1,9 +1,10 @@
 import React, {useState, useEffect} from 'react';
-import {View, Text, ScrollView, TouchableOpacity, TextInput, Alert, KeyboardAvoidingView} from 'react-native';
+import {View, ScrollView, TouchableOpacity, Alert, KeyboardAvoidingView} from 'react-native';
+import {Text, TextInput} from '../components/AppText';
 import {useKeyboardBehavior} from '../hooks/useKeyboardBehavior';
 import {useTranslation} from 'react-i18next';
 import {Fonts} from '../theme';
-import {Member, MemberPoll, PollOption, uid, fmtTime} from '../utils';
+import {Member, MemberPoll, PollOption, uid, fmtTime, sortMembersBySearch} from '../utils';
 import {store, KEYS} from '../storage';
 
 interface Props {
@@ -15,7 +16,7 @@ export const PollsScreen = ({theme: T, members}: Props) => {
   const {t} = useTranslation();
   const fs = (s: number) => Math.round(s * (T.textScale || 1));
   const behavior = useKeyboardBehavior();
-  const activeMembers = members.filter(m => !m.archived);
+  const activeMembers = members.filter(m => !m.archived && !m.isCustomFront);
   const [polls, setPolls] = useState<MemberPoll[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [question, setQuestion] = useState('');
@@ -73,11 +74,13 @@ export const PollsScreen = ({theme: T, members}: Props) => {
       <View style={{flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10}}>
         <Text style={{fontSize: fs(11), color: T.dim}}>{t('polls.votingAs')}</Text>
         <TouchableOpacity onPress={() => setVoterPickerOpen(!voterPickerOpen)} activeOpacity={0.7}
+          accessibilityRole="button" accessibilityState={{expanded: voterPickerOpen}} accessibilityLabel={t('polls.votingAs')} accessibilityValue={{text: getName(voterId)}}
           style={{backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6}}>
           <Text style={{fontSize: fs(12), color: T.text}}>{getName(voterId)} ▾</Text>
         </TouchableOpacity>
         <View style={{flex: 1}} />
         <TouchableOpacity onPress={() => setShowCreate(!showCreate)} activeOpacity={0.7}
+          accessibilityRole="button" accessibilityState={{expanded: showCreate}} accessibilityLabel={t('polls.createPoll')}
           style={{backgroundColor: T.accentBg, borderWidth: 1, borderColor: `${T.accent}40`, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8}}>
           <Text style={{fontSize: fs(12), fontWeight: '600', color: T.accent}}>{t('polls.createPoll')}</Text>
         </TouchableOpacity>
@@ -99,10 +102,10 @@ export const PollsScreen = ({theme: T, members}: Props) => {
             }}
           />
           <ScrollView style={{maxHeight: 220}} keyboardShouldPersistTaps="handled">
-            {activeMembers
-              .filter(m => !voterSearch.trim() || m.name.toLowerCase().includes(voterSearch.trim().toLowerCase()))
+            {sortMembersBySearch(activeMembers.filter(m => !voterSearch.trim() || m.name.toLowerCase().includes(voterSearch.trim().toLowerCase())), voterSearch.trim())
               .map(m => (
                 <TouchableOpacity key={m.id} onPress={() => {setVoterId(m.id); setVoterPickerOpen(false); setVoterSearch('');}} activeOpacity={0.7}
+                  accessibilityRole="button" accessibilityLabel={m.name} accessibilityState={{selected: voterId === m.id}}
                   style={{paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: T.border,
                     backgroundColor: voterId === m.id ? `${T.accent}15` : 'transparent'}}>
                   <Text style={{fontSize: fs(13), color: voterId === m.id ? T.accent : T.text}}>{m.name}</Text>
@@ -122,20 +125,20 @@ export const PollsScreen = ({theme: T, members}: Props) => {
                 placeholder={`${t('polls.optionPlaceholder')} ${i + 1}`} placeholderTextColor={T.muted}
                 style={{flex: 1, backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, fontSize: fs(13)}} />
               {options.length > 2 && (
-                <TouchableOpacity onPress={() => setOptions(options.filter((_, j) => j !== i))} activeOpacity={0.7}>
+                <TouchableOpacity onPress={() => setOptions(options.filter((_, j) => j !== i))} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('polls.removeOption')}>
                   <Text style={{fontSize: fs(14), color: T.danger}}>✕</Text>
                 </TouchableOpacity>
               )}
             </View>
           ))}
-          <TouchableOpacity onPress={() => setOptions([...options, ''])} activeOpacity={0.7} style={{paddingVertical: 6}}>
+          <TouchableOpacity onPress={() => setOptions([...options, ''])} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('polls.addOption')} style={{paddingVertical: 6}}>
             <Text style={{fontSize: fs(12), color: T.accent}}>{t('polls.addOption')}</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setHideVoters(!hideVoters)} activeOpacity={0.7} style={{flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, marginBottom: 10}}>
+          <TouchableOpacity onPress={() => setHideVoters(!hideVoters)} activeOpacity={0.7} accessibilityRole="checkbox" accessibilityState={{checked: hideVoters}} accessibilityLabel={t('polls.hideVoters')} style={{flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, marginBottom: 10}}>
             <Text style={{fontSize: fs(16), color: hideVoters ? T.accent : T.muted}}>{hideVoters ? '☑' : '☐'}</Text>
             <Text style={{fontSize: fs(12), color: T.dim}}>{t('polls.hideVoters')}</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={createPoll} activeOpacity={0.7}
+          <TouchableOpacity onPress={createPoll} activeOpacity={0.7} accessibilityRole="button"
             style={{backgroundColor: T.accentBg, borderWidth: 1, borderColor: `${T.accent}40`, borderRadius: 8, paddingVertical: 10, alignItems: 'center'}}>
             <Text style={{fontSize: fs(13), fontWeight: '600', color: T.accent}}>{t('common.add')}</Text>
           </TouchableOpacity>
@@ -153,7 +156,7 @@ export const PollsScreen = ({theme: T, members}: Props) => {
           return (
             <View key={poll.id} style={{backgroundColor: T.card, borderRadius: 12, borderWidth: 1, borderColor: T.border, padding: 14, marginBottom: 10}}>
               <View style={{flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6}}>
-                <Text style={{flex: 1, fontSize: fs(15), fontWeight: '600', color: T.text}}>{poll.question}</Text>
+                <Text accessibilityRole="header" style={{flex: 1, fontSize: fs(15), fontWeight: '600', color: T.text}}>{poll.question}</Text>
                 {isClosed && <Text style={{fontSize: fs(10), color: T.danger, fontWeight: '600', textTransform: 'uppercase'}}>{t('polls.closed')}</Text>}
               </View>
               <Text style={{fontSize: fs(11), color: T.muted, marginBottom: 10}}>
@@ -165,6 +168,7 @@ export const PollsScreen = ({theme: T, members}: Props) => {
                 const voted = opt.votes.includes(voterId);
                 return (
                   <TouchableOpacity key={opt.id} onPress={() => !isClosed && vote(poll.id, opt.id)} activeOpacity={isClosed ? 1 : 0.7}
+                    accessibilityRole="button" accessibilityLabel={`${opt.label}, ${pct}%`} accessibilityState={{selected: voted, disabled: isClosed}}
                     style={{borderRadius: 8, borderWidth: 1, borderColor: voted ? T.accent : T.border, backgroundColor: T.surface, marginBottom: 6, overflow: 'hidden'}}>
                     <View style={{position: 'absolute', left: 0, top: 0, bottom: 0, width: `${pct}%`, backgroundColor: voted ? `${T.accent}15` : `${T.border}30`}} />
                     <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10}}>
@@ -179,10 +183,10 @@ export const PollsScreen = ({theme: T, members}: Props) => {
               })}
 
               <View style={{flexDirection: 'row', gap: 12, marginTop: 6}}>
-                <TouchableOpacity onPress={() => toggleClose(poll.id)} activeOpacity={0.7}>
+                <TouchableOpacity onPress={() => toggleClose(poll.id)} activeOpacity={0.7} accessibilityRole="button">
                   <Text style={{fontSize: fs(11), color: T.accent}}>{isClosed ? t('polls.reopenPoll') : t('polls.closePoll')}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => deletePoll(poll.id)} activeOpacity={0.7}>
+                <TouchableOpacity onPress={() => deletePoll(poll.id)} activeOpacity={0.7} accessibilityRole="button">
                   <Text style={{fontSize: fs(11), color: T.danger}}>{t('polls.deletePoll')}</Text>
                 </TouchableOpacity>
               </View>

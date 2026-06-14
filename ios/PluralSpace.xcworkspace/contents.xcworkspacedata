@@ -2,9 +2,12 @@
 <Workspace
    version = "1.0">
    <FileRef
-      location = "group:PluralSpace.xcodeproj">
+      location = "absolute:/Users/thehanyou/Documents/Developer/PluralStar-ios/ios/PluralSpace.xcodeproj">
    </FileRef>
    <FileRef
       location = "group:Pods/Pods.xcodeproj">
+   </FileRef>
+   <FileRef
+      location = "group:PluralSpace.xcodeproj">
    </FileRef>
 </Workspace>

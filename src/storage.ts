@@ -19,11 +19,17 @@ export const KEYS = {
   lastNoteboardSeen: 'ps:lastNoteboardSeen',
   polls:    'ps:polls',
   journalTemplates: 'ps:journalTemplates',
+  relationships: 'ps:relationships',
+  relationshipTypes: 'ps:relationshipTypes',
+  systemMapMembers: 'ps:systemMapMembers',
+  deviceCodes: 'ps:deviceCodes',
+  medical: 'ps:medical',
 };
 
 const CRITICAL_KEYS = new Set([
   KEYS.system, KEYS.members, KEYS.front, KEYS.history,
-  KEYS.journal, KEYS.groups, KEYS.chatChannels,
+  KEYS.journal, KEYS.groups, KEYS.chatChannels, KEYS.relationships,
+  KEYS.deviceCodes, KEYS.medical,
 ]);
 
 const STORAGE_DEBUG = __DEV__;

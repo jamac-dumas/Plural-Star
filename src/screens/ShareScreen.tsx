@@ -1,16 +1,64 @@
 import React, {useState} from 'react';
-import {View, Text, ScrollView, TouchableOpacity, TextInput, Alert, StyleSheet, ActivityIndicator} from 'react-native';
+import {View, ScrollView, TouchableOpacity, Alert, StyleSheet, ActivityIndicator} from 'react-native';
+import {Text, TextInput} from '../components/AppText';
 import {useTranslation} from 'react-i18next';
 import {safePick, isPickerCancel, getPickedFilePath} from '../utils/safePicker';
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import {exportJSON, exportHTML, exportEmail, exportAllJournalJSON, exportAllJournalTxt, exportAllJournalMd, ExportCategories} from '../export/exportUtils';
+import {exportJSON, exportBundle, exportHTML, exportEmail, exportAllJournalJSON, exportAllJournalTxt, exportAllJournalMd, ExportCategories, readZipBundle, base64FromU8} from '../export/exportUtils';
 import {store, KEYS, chatMsgKey, listRecoverableBackups, restoreFromBackup, RecoverableEntry} from '../storage';
-import {SystemInfo, Member, MemberGroup, FrontState, HistoryEntry, JournalEntry, ShareSettings, AppSettings, ExportPayload, CustomFieldDef, CustomFieldType, CustomFieldValue, uid, allFrontMemberIds, findOpenFrontInHistory} from '../utils';
+import {SystemInfo, Member, MemberGroup, FrontState, HistoryEntry, JournalEntry, ShareSettings, AppSettings, ExportPayload, CustomFieldDef, CustomFieldType, CustomFieldValue, ChatChannel, ChatMessage, MemberPoll, uid, allFrontMemberIds, findOpenFrontInHistory} from '../utils';
 
 type Section = 'export' | 'import' | 'shareview';
-type ImportSource = 'backup' | 'journal' | 'simplyplural' | 'pluralkit' | 'spfile';
+type ImportSource = 'backup' | 'journal' | 'simplyplural' | 'pluralkit' | 'spfile' | 'ampersand' | 'pluralspace';
 
 import {saveAvatarFromUrl, saveAvatar, saveBannerFromBase64, saveBannerFromUrl, migrateInlineChatMedia} from '../utils/mediaUtils';
+import {parallelMap} from '../utils/concurrency';
+import {parseAmpar} from '../utils/ampar';
+
+const normalizeSpAvatarUrl = (raw: any): string => {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (s.startsWith('//')) return 'https:' + s;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith('/avatars/')) return 'https://spaces.apparyllis.com' + s;
+  if (/^[\w-]+(\.[\w-]+)+\//.test(s)) return 'https://' + s;
+  return '';
+};
+const spAvatarCandidates = (content: any, fallbackUid: string): string[] => {
+  const out: string[] = [];
+  const c = content || {};
+  const uuid = String(c.avatarUuid || '');
+  const uid = String(c.uid || fallbackUid || '');
+  if (uuid && uid) out.push(`https://spaces.apparyllis.com/avatars/${uid}/${uuid}`);
+  const direct = normalizeSpAvatarUrl(c.avatarUrl);
+  if (direct && !out.includes(direct)) out.push(direct);
+  return out;
+};
+const downloadFirstAvatar = async (memberId: string, urls: string[]): Promise<string | undefined> => {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (const u of urls) {
+      const r = await saveAvatarFromUrl(memberId, u).catch(() => undefined);
+      if (r) return r;
+    }
+    if (attempt === 0) await new Promise<void>(res => setTimeout(() => res(), 1200));
+  }
+  return undefined;
+};
+
+const spGet = async (url: string, headers: any): Promise<any | null> => {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, {headers});
+      if (res.ok) { try { return await res.json(); } catch { return null; } }
+      if (res.status === 401 || res.status === 403) return null;
+      console.log(`[SP-FETCH] ${url} -> ${res.status} (attempt ${attempt + 1})`);
+    } catch (e) {
+      console.log(`[SP-FETCH] ${url} network error (attempt ${attempt + 1}):`, e);
+    }
+    if (attempt < 2) await new Promise<void>(r => setTimeout(() => r(), 700 * (attempt + 1)));
+  }
+  return null;
+};
 
 interface Props {
   theme: any; system: SystemInfo; members: Member[]; front: FrontState | null;
@@ -26,8 +74,9 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [emailAddr, setEmailAddr] = useState('');
   const [restoreFile, setRestoreFile] = useState<string | null>(null);
   const [restorePath, setRestorePath] = useState<string | null>(null);
+  const [restoreIsBundle, setRestoreIsBundle] = useState<boolean>(false);
   const [restorePreview, setRestorePreview] = useState<boolean>(false);
-  const [restoreSel, setRestoreSel] = useState({system: true, members: true, avatars: true, banners: true, journal: true, frontHistory: true, groups: true, chat: true, moods: true, palettes: true, settings: true, customFields: true, noteboards: true, polls: true});
+  const [restoreSel, setRestoreSel] = useState({system: true, members: true, avatars: true, banners: true, journal: true, frontHistory: true, groups: true, chat: true, moods: true, palettes: true, settings: true, customFields: true, noteboards: true, polls: true, journalTemplates: true, relationships: true, medical: true});
   const [restoreError, setRestoreError] = useState('');
   const [restoreDone, setRestoreDone] = useState(false);
   const [recoverEntries, setRecoverEntries] = useState<RecoverableEntry[] | null>(null);
@@ -35,17 +84,25 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [recoverSel, setRecoverSel] = useState<Record<string, boolean>>({});
   const [recoverDone, setRecoverDone] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<string>('');
   const [importStatus, setImportStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [importMsg, setImportMsg] = useState('');
   const [importSource, setImportSource] = useState<ImportSource>('backup');
   const [extToken, setExtToken] = useState('');
   const [extLoading, setExtLoading] = useState(false);
-  const [extPreview, setExtPreview] = useState<{members: any[]; switches: any[]; system: any; customFields?: any[]; groups?: any[]} | null>(null);
-  const [extSel, setExtSel] = useState({system: true, members: true, avatars: true, banners: true, frontHistory: true, customFields: true, groups: true});
+  const [extPreview, setExtPreview] = useState<{members: any[]; switches: any[]; system: any; customFields?: any[]; groups?: any[]; journal?: any[]; chat?: any[]; polls?: any[]} | null>(null);
+  const [extSel, setExtSel] = useState({system: true, members: true, avatars: true, banners: true, frontHistory: true, customFields: true, groups: true, journal: true, chat: true, polls: true});
+  const [psAvatarIndex, setPsAvatarIndex] = useState<Record<string, string> | null>(null);
+  const [psZipFiles, setPsZipFiles] = useState<Record<string, Uint8Array> | null>(null);
 
   const primaryFronters = (front?.primary?.memberIds || []).map(getMember).filter(Boolean) as Member[];
   const coFronters = (front?.coFront?.memberIds || []).map(getMember).filter(Boolean) as Member[];
   const coConsciousFronters = (front?.coConscious?.memberIds || []).map(getMember).filter(Boolean) as Member[];
+
+  const singlet = appSettings.accountMode === 'singlet';
+  const catSystemLabel = singlet ? t('share.nameGoals') : t('share.systemNameDesc');
+  const catMembersLabel = singlet ? t('tabs.profile') : t('share.memberProfiles');
+  const catFrontLabel = singlet ? t('history.statusHistory') : t('share.frontHistory');
 
   const tog = (k: keyof ShareSettings) => onSettingsChange({...shareSettings, [k]: !shareSettings[k]});
   const togR = (k: keyof typeof restoreSel) => setRestoreSel(s => ({...s, [k]: !s[k]}));
@@ -54,11 +111,12 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const [exportSel, setExportSel] = useState<ExportCategories>({
     system: true, members: true, avatars: true, banners: true, frontHistory: true, journal: true,
     groups: true, chat: true, moods: true, palettes: true, settings: true,
-    customFields: true, noteboards: true, polls: true,
+    customFields: true, noteboards: true, polls: true, journalTemplates: true, relationships: true,
+    medical: true,
   });
   const togExp = (k: keyof ExportCategories) => setExportSel(s => ({...s, [k]: !s[k]}));
 
-  const handleJSON = async () => {try {await exportJSON(system, members, history, journal, exportSel);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
+  const handleJSON = async () => {try {await exportBundle(system, members, history, journal, exportSel);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
   const handleHTML = async () => {try {await exportHTML(system, members, history, journal);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
   const handleEmail = () => {
     if (!emailAddr.trim() || !emailAddr.includes('@')) {Alert.alert(t('share.invalidEmail'), t('share.invalidEmailMsg')); return;}
@@ -88,10 +146,33 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   };
 
   const handlePickBackup = async () => {
-    setRestoreError(''); setRestorePreview(false); setRestorePath(null); setRestoreFile(null); setRestoreDone(false);
+    setRestoreError(''); setRestorePreview(false); setRestorePath(null); setRestoreFile(null); setRestoreDone(false); setRestoreIsBundle(false);
     try {
-      const [res] = await safePick({type: ['application/json', 'text/plain']});
+      const [res] = await safePick({type: ['application/json', 'application/zip', 'text/plain']});
       const pickedPath = getPickedFilePath(res);
+      const isZip = /\.zip$/i.test(res.name || '') || /\.zip$/i.test(pickedPath);
+      if (isZip) {
+        let bundle: {files: Record<string, Uint8Array>; data: any | null} | null = null;
+        try { bundle = await readZipBundle(pickedPath); }
+        catch { bundle = await readZipBundle(res.uri || pickedPath); }
+        const bdata = bundle?.data;
+        if (!bdata || !(bdata._meta?.app === 'Plural Star' || bdata._meta?.app === 'Plural Space')) {
+          setRestoreError(t('share.bundleNotRecognized'));
+          return;
+        }
+        let safeZipPath = pickedPath;
+        try {
+          const dest = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/ps_restore_pending.zip`;
+          try { await ReactNativeBlobUtil.fs.unlink(dest); } catch {}
+          await ReactNativeBlobUtil.fs.cp(pickedPath, dest);
+          safeZipPath = dest;
+        } catch {}
+        setRestorePath(safeZipPath);
+        setRestoreIsBundle(true);
+        setRestoreFile(res.name || 'backup.zip');
+        setRestorePreview(true);
+        return;
+      }
       let content: string;
       try {
         content = await ReactNativeBlobUtil.fs.readFile(pickedPath, 'utf8');
@@ -103,11 +184,16 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
         setRestoreError('File is not valid JSON. Please pick a Plural Star or Simply Plural backup (.json) file.');
         return;
       }
+      const isPluralSpaceApp = !parsed._meta && parsed.system && typeof parsed.system === 'object' && Array.isArray(parsed.members) && Array.isArray(parsed.fronts);
+      if (isPluralSpaceApp) { setRestoreError(t('share.psUseTab')); return; }
       const isNativePS = parsed._meta && (parsed._meta.app === 'Plural Star' || parsed._meta.app === 'Plural Space');
       const isSPExport = !parsed._meta && Array.isArray(parsed.members) && parsed.members.length > 0
         && parsed.members[0]._id !== undefined && Array.isArray(parsed.customFields);
-      if (!isNativePS && !isSPExport) {
-        setRestoreError('This does not look like a Plural Star or Simply Plural backup. Pick a .json file exported from either app.');
+      const isOctocon = !parsed._meta && parsed.user && typeof parsed.user === 'object' && Array.isArray(parsed.alters);
+      const isOurcana = (parsed.format === 'ourcana') || (!parsed._meta && Array.isArray(parsed.members) && Array.isArray(parsed.frontHistory) && parsed.members[0]?.id !== undefined);
+      const isMultiplicity = (parsed.app === 'multiplicity') || (Array.isArray(parsed.alters) && Array.isArray(parsed.front_entries));
+      if (!isNativePS && !isSPExport && !isOctocon && !isOurcana && !isMultiplicity) {
+        setRestoreError('This does not look like a Plural Star, Simply Plural, Octocon, Ourcana, or HiveMind backup. Pick a .json file exported from one of those apps (or use the Ampersand tab for .ampar files).');
         return;
       }
       const safeTempPath = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/ps_restore_pending.json`;
@@ -125,8 +211,93 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
       {text: t('share.restore'), style: 'destructive', onPress: async () => {
         setRestoring(true);
         try {
+          if (restoreIsBundle) {
+            const {files, data} = await readZipBundle(restorePath);
+            if (!data) throw new Error('Bundle is missing data.json');
+            if (restoreSel.system && data.system) await store.set(KEYS.system, data.system);
+            if (restoreSel.members && Array.isArray(data.members)) {
+              let mem: any[] = data.members.map((m: any) => { const {avatar_media_path, banner_media_path, ...rest} = m; return rest; });
+              if (restoreSel.avatars) {
+                const withA = data.members.filter((m: any) => m.avatar_media_path && files[m.avatar_media_path]);
+                const map: Record<string, string> = {};
+                let done = 0;
+                setRestoreProgress(t('share.progressAvatars'));
+                for (const m of withA) {
+                  const uri = await saveAvatar(m.id, base64FromU8(files[m.avatar_media_path])).catch(() => null);
+                  if (uri) map[m.id] = uri;
+                  done++; setRestoreProgress(t('share.progressAvatarsN', {done, total: withA.length}));
+                }
+                mem = mem.map(m => map[m.id] ? {...m, avatar: map[m.id]} : m);
+              }
+              if (restoreSel.banners) {
+                const withB = data.members.filter((m: any) => m.banner_media_path && files[m.banner_media_path]);
+                const map: Record<string, string> = {};
+                let done = 0;
+                setRestoreProgress(t('share.progressBanners'));
+                for (const m of withB) {
+                  const uri = await saveBannerFromBase64(m.id, base64FromU8(files[m.banner_media_path])).catch(() => null);
+                  if (uri) map[m.id] = uri;
+                  done++; setRestoreProgress(t('share.progressBannersN', {done, total: withB.length}));
+                }
+                mem = mem.map(m => map[m.id] ? {...m, banner: map[m.id]} : m);
+              }
+              setRestoreProgress(t('share.progressSavingMembers'));
+              await store.set(KEYS.members, mem);
+            }
+            if (restoreSel.journal && data.journal) await store.set(KEYS.journal, data.journal);
+            if (restoreSel.frontHistory && data.frontHistory) await store.set(KEYS.history, data.frontHistory);
+            if (restoreSel.groups && data.groups) await store.set(KEYS.groups, data.groups);
+            if (restoreSel.chat) {
+              if (data.chatChannels) await store.set(KEYS.chatChannels, data.chatChannels);
+              if (data.chatMessages) {
+                setRestoreProgress(t('share.progressChat'));
+                const channelIds = Object.keys(data.chatMessages).filter((id: string) => Array.isArray(data.chatMessages[id]) && data.chatMessages[id].length > 0);
+                await parallelMap(channelIds, async (chId: string) => {
+                  try {
+                    const {messages: migrated} = await migrateInlineChatMedia(data.chatMessages[chId]);
+                    await store.set(chatMsgKey(chId), migrated);
+                  } catch (chErr) { console.error(`[RESTORE] failed channel ${chId}:`, chErr); }
+                }, 4, (d, total) => setRestoreProgress(t('share.progressChatN', {done: d, total})));
+              }
+            }
+            if (restoreSel.settings || restoreSel.moods) {
+              const currentSettings = await store.get<AppSettings>(KEYS.settings) || {} as AppSettings;
+              let newSettings = {...currentSettings};
+              if (restoreSel.settings && data.settings) {
+                newSettings = {...data.settings};
+                if (!restoreSel.moods) newSettings.customMoods = currentSettings.customMoods || [];
+              }
+              if (restoreSel.moods) newSettings.customMoods = data.customMoods || data.settings?.customMoods || [];
+              await store.set(KEYS.settings, newSettings);
+            }
+            if (restoreSel.palettes && data.palettes) await store.set(KEYS.palettes, data.palettes);
+            if (restoreSel.frontHistory && data.front !== undefined) await store.set(KEYS.front, data.front);
+            if (restoreSel.customFields && data.customFieldDefs) await store.set(KEYS.customFieldDefs, data.customFieldDefs);
+            if (restoreSel.noteboards && data.noteboards) await store.set(KEYS.noteboards, data.noteboards);
+            if (restoreSel.polls && data.polls) await store.set(KEYS.polls, data.polls);
+            if (restoreSel.journalTemplates && data.journalTemplates) await store.set(KEYS.journalTemplates, data.journalTemplates);
+            if (restoreSel.relationships && data.relationships) await store.set(KEYS.relationships, data.relationships);
+            if (restoreSel.relationships && data.relationshipTypes) await store.set(KEYS.relationshipTypes, data.relationshipTypes);
+            if (restoreSel.relationships && data.systemMapMembers) await store.set(KEYS.systemMapMembers, data.systemMapMembers);
+            if (restoreSel.medical && data.medical) await store.set(KEYS.medical, data.medical);
+            setRestoreDone(true); setTimeout(() => onDataImported(), 800);
+            return;
+          }
           const content = await ReactNativeBlobUtil.fs.readFile(restorePath, 'utf8');
           const rawData: any = JSON.parse(content);
+
+          const looksLikeOurcana = (rawData.format === 'ourcana') || (!rawData._meta && Array.isArray(rawData.members) && Array.isArray(rawData.frontHistory) && rawData.members[0]?.id !== undefined);
+          if (looksLikeOurcana) {
+            await importOurcana(rawData);
+            setRestoreDone(true); setRestoring(false); setTimeout(() => onDataImported(), 800);
+            return;
+          }
+          const looksLikeMultiplicity = (rawData.app === 'multiplicity') || (Array.isArray(rawData.alters) && Array.isArray(rawData.front_entries) && rawData.alters[0]?.alter_id !== undefined);
+          if (looksLikeMultiplicity) {
+            await importMultiplicity(rawData);
+            setRestoreDone(true); setRestoring(false); setTimeout(() => onDataImported(), 800);
+            return;
+          }
 
           const looksLikeSP = !rawData._meta && Array.isArray(rawData.members) && rawData.members.length > 0
             && rawData.members[0]._id !== undefined && Array.isArray(rawData.customFields);
@@ -144,7 +315,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               }
               return '';
             };
-            const SP_TYPE_MAP: Record<string, CustomFieldType> = {'0': 'text', '1': 'number', '2': 'toggle', '3': 'date', '4': 'monthYear', '5': 'month', '6': 'year', 'text': 'text', 'number': 'number', 'checkbox': 'toggle', 'toggle': 'toggle', 'date': 'date', 'markdown': 'markdown'};
+            const SP_TYPE_MAP: Record<string, CustomFieldType> = {'0': 'text', '1': 'color', '2': 'date', '3': 'month', '4': 'year', '5': 'monthYear', '6': 'timestamp', '7': 'monthDay', 'text': 'text', 'number': 'number', 'checkbox': 'toggle', 'toggle': 'toggle', 'date': 'date', 'markdown': 'markdown'};
             const existingMembers = await store.get<Member[]>(KEYS.members, []) || [];
             const byNameLower: Record<string, Member> = {};
             existingMembers.forEach(lm => { const n = (lm.name || '').trim().toLowerCase(); if (n) byNameLower[n] = lm; });
@@ -170,6 +341,28 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             if (restoreSel.members) await store.set(KEYS.members, newMembers);
             const idMap: Record<string, string> = {};
             rawData.members.forEach((sp: any, i: number) => { const sid = normId(sp._id); if (sid) idMap[sid] = newMembers[i].id; });
+            if (restoreSel.members && restoreSel.avatars) {
+              const spAvatarUrls: Record<string, string[]> = {};
+              const spFallbackUid = String(rawData.members.find((x: any) => x.uid)?.uid || rawData.uid || '');
+              rawData.members.forEach((sp: any, i: number) => {
+                const localId = newMembers[i].id;
+                const cands = spAvatarCandidates(sp, spFallbackUid);
+                if (cands.length) spAvatarUrls[localId] = cands;
+              });
+              const spAvatarEntries = Object.entries(spAvatarUrls);
+              if (spAvatarEntries.length > 0) {
+                setRestoreProgress(t('share.progressAvatarsDownload'));
+                const downloaded: Record<string, string> = {};
+                await parallelMap(spAvatarEntries, async ([memberId, urls]) => {
+                  const fileUri = await downloadFirstAvatar(memberId, urls as string[]);
+                  if (fileUri) downloaded[memberId] = fileUri;
+                }, 4, (done, total) => setRestoreProgress(t('share.progressAvatarsDownloadN', {done, total})));
+                if (Object.keys(downloaded).length > 0) {
+                  const withAvatars = newMembers.map(m => downloaded[m.id] ? {...m, avatar: downloaded[m.id]} : m);
+                  await store.set(KEYS.members, withAvatars);
+                }
+              }
+            }
             if (restoreSel.customFields && rawData.customFields.length > 0) {
               const existingDefs = await store.get<CustomFieldDef[]>(KEYS.customFieldDefs, []) || [];
               const fieldIdMap: Record<string, string> = {};
@@ -218,10 +411,145 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               const sp_switches = rawData.frontHistory.map((s: any) => ({id: normId(s._id), content: s}));
               const newH = convertSPSwitches(sp_switches, idMap);
               if (newH.length > 0) {
-                const merged = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+                const merged = mergeHistoryEntries(newH, history);
                 await store.set(KEYS.history, merged);
                 const importedOpenFront = findOpenFrontInHistory(merged);
                 if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
+              }
+            }
+            setRestoreDone(true); setRestoring(false);
+            return;
+          }
+
+          const looksLikeOctocon = !rawData._meta && rawData.user && typeof rawData.user === 'object' && Array.isArray(rawData.alters);
+          if (looksLikeOctocon) {
+            const ocUser = rawData.user || {};
+            const alters: any[] = Array.isArray(rawData.alters) ? rawData.alters : [];
+            const ocFields: any[] = Array.isArray(ocUser.fields) ? ocUser.fields : [];
+            const ocTags: any[] = Array.isArray(rawData.tags) ? rawData.tags : [];
+            const ocFronts: any[] = Array.isArray(rawData.fronts) ? rawData.fronts : [];
+            const ocTime = (v: any): number | null => {
+              if (!v) return null;
+              let str = String(v);
+              if (!/([zZ]|[+-]\d\d:?\d\d)$/.test(str)) str += 'Z';
+              const ms = new Date(str).getTime();
+              return isNaN(ms) ? null : ms;
+            };
+            const ocColor = (c: any): string => {
+              if (!c) return '#DAA520';
+              const str = String(c).trim();
+              return str.startsWith('#') ? str : `#${str}`;
+            };
+            if (restoreSel.system) {
+              const sys = await store.get<any>(KEYS.system, {}) || {};
+              await store.set(KEYS.system, {...sys, name: ocUser.username || sys.name, description: ocUser.description || sys.description || ''});
+            }
+            const idMap: Record<string, string> = {};
+            if (restoreSel.members) {
+              const existing = await store.get<Member[]>(KEYS.members, []) || [];
+              const merged: Member[] = [...existing];
+              alters.forEach((a: any) => {
+                const extId = String(a.id);
+                const incoming = {
+                  name: (a.name && String(a.name).trim()) || 'Unnamed member',
+                  pronouns: String(a.pronouns || ''),
+                  role: '',
+                  color: ocColor(a.color),
+                  description: String(a.description || ''),
+                };
+                const bySource = merged.findIndex(em => em.sourceId === extId);
+                if (bySource >= 0) { merged[bySource] = {...merged[bySource], ...incoming, sourceId: extId}; idMap[extId] = merged[bySource].id; return; }
+                const lower = incoming.name.toLowerCase();
+                const byName = merged.findIndex(em => !em.sourceId && em.name.toLowerCase() === lower);
+                if (byName >= 0) { merged[byName] = {...merged[byName], ...incoming, sourceId: extId}; idMap[extId] = merged[byName].id; return; }
+                const nid = uid();
+                merged.push({id: nid, sourceId: extId, tags: [], groupIds: [], customFields: [], ...incoming});
+                idMap[extId] = nid;
+              });
+              await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
+            }
+            if (restoreSel.customFields && ocFields.length > 0) {
+              const existingDefs = await store.get<CustomFieldDef[]>(KEYS.customFieldDefs, []) || [];
+              const fieldIdMap: Record<string, string> = {};
+              const newDefs: CustomFieldDef[] = [];
+              ocFields.forEach((f: any, i: number) => {
+                const name = String(f.name || `Field ${i + 1}`);
+                const existing = existingDefs.find(d => d.name.toLowerCase() === name.toLowerCase());
+                let localId: string;
+                if (existing) { localId = existing.id; } else {
+                  const cfType: CustomFieldType = f.type === 'number' ? 'number' : f.type === 'boolean' ? 'toggle' : 'text';
+                  localId = uid();
+                  newDefs.push({id: localId, name, type: cfType, sortOrder: i});
+                }
+                fieldIdMap[String(f.id)] = localId;
+              });
+              if (newDefs.length > 0) await store.set(KEYS.customFieldDefs, [...existingDefs, ...newDefs]);
+              const membersForUpdate = await store.get<Member[]>(KEYS.members, []) || [];
+              const updatedMembers = membersForUpdate.map(lm => {
+                const alter = alters.find((a: any) => idMap[String(a.id)] === lm.id);
+                if (!alter || !Array.isArray(alter.fields)) return lm;
+                const cf: CustomFieldValue[] = [...(lm.customFields || [])];
+                alter.fields.forEach((fv: any) => {
+                  const fid = fieldIdMap[String(fv.id)];
+                  if (!fid || fv.value == null) return;
+                  const valStr = String(fv.value);
+                  const idx = cf.findIndex(c => c.fieldId === fid);
+                  if (idx >= 0) cf[idx] = {fieldId: fid, value: valStr};
+                  else cf.push({fieldId: fid, value: valStr});
+                });
+                return {...lm, customFields: cf};
+              });
+              await store.set(KEYS.members, updatedMembers);
+            }
+            if (restoreSel.groups && ocTags.length > 0) {
+              const existingGroups = await store.get<MemberGroup[]>(KEYS.groups, []) || [];
+              const mergedGroups: MemberGroup[] = [...existingGroups];
+              const groupIdMap: Record<string, string> = {};
+              ocTags.forEach((tg: any) => {
+                const name = String(tg.name || 'Group');
+                let g = mergedGroups.find(x => x.name.toLowerCase() === name.toLowerCase());
+                if (!g) { g = {id: uid(), name, color: tg.color ? ocColor(tg.color) : undefined}; mergedGroups.push(g); }
+                groupIdMap[String(tg.id)] = g.id;
+              });
+              await store.set(KEYS.groups, mergedGroups);
+              const membersForGroups = await store.get<Member[]>(KEYS.members, []) || [];
+              const withGroups = membersForGroups.map(lm => {
+                const gids = ocTags.filter((tg: any) => Array.isArray(tg.alters) && tg.alters.some((aid: any) => idMap[String(aid)] === lm.id)).map((tg: any) => groupIdMap[String(tg.id)]).filter(Boolean) as string[];
+                if (gids.length === 0) return lm;
+                return {...lm, groupIds: [...new Set([...(lm.groupIds || []), ...gids])]};
+              });
+              await store.set(KEYS.members, withGroups);
+            }
+            if (restoreSel.frontHistory && ocFronts.length > 0) {
+              const ocSwitches = ocFronts.map((f: any) => ({content: {member: String(f.alter_id), startTime: ocTime(f.time_start), endTime: ocTime(f.time_end), comment: f.comment || ''}}));
+              const newH = convertSPSwitches(ocSwitches, idMap);
+              if (newH.length > 0) {
+                const merged = mergeHistoryEntries(newH, history);
+                await store.set(KEYS.history, merged);
+                const importedOpenFront = findOpenFrontInHistory(merged);
+                if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
+              }
+            }
+            if (restoreSel.avatars) {
+              const ocAvatarUrls: Record<string, string> = {};
+              alters.forEach((a: any) => {
+                const localId = idMap[String(a.id)];
+                const url = String(a.avatar_url || '');
+                if (localId && (url.startsWith('http://') || url.startsWith('https://'))) ocAvatarUrls[localId] = url;
+              });
+              const entries = Object.entries(ocAvatarUrls);
+              if (entries.length > 0) {
+                setRestoreProgress(t('share.progressAvatarsDownload'));
+                const downloaded: Record<string, string> = {};
+                await parallelMap(entries, async ([memberId, url]) => {
+                  const fileUri = await downloadFirstAvatar(memberId, [url]);
+                  if (fileUri) downloaded[memberId] = fileUri;
+                }, 4, (done, total) => setRestoreProgress(t('share.progressAvatarsDownloadN', {done, total})));
+                if (Object.keys(downloaded).length > 0) {
+                  const cur = await store.get<Member[]>(KEYS.members, []) || [];
+                  const withAv = cur.map(m => downloaded[m.id] ? {...m, avatar: downloaded[m.id]} : m);
+                  await store.set(KEYS.members, withAv);
+                }
               }
             }
             setRestoreDone(true); setRestoring(false);
@@ -237,56 +565,97 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           }
           if (restoreSel.system && data.system) await store.set(KEYS.system, data.system);
           if (restoreSel.members && data.members) {
-            await store.set(KEYS.members, data.members);
-            if (restoreSel.avatars && data.avatars && Object.keys(data.avatars).length > 0) {
-              const withAvatars: any[] = [...data.members];
-              let changed = false;
-              for (let i = 0; i < withAvatars.length; i++) {
-                const memberId = withAvatars[i].id;
-                const raw = data.avatars[memberId];
-                if (!raw) continue;
-                delete data.avatars[memberId];
-                try {
-                  const b64 = raw.startsWith('data:') ? raw.split(',')[1] : raw;
-                  const fileUri = await saveAvatar(memberId, b64).catch(() => null);
-                  if (fileUri) { withAvatars[i] = {...withAvatars[i], avatar: fileUri}; changed = true; }
-                } catch {}
-              }
-              if (changed) await store.set(KEYS.members, withAvatars);
+            let membersAccum: any[] = [...data.members];
+            const wantAvatars = restoreSel.avatars && data.avatars && Object.keys(data.avatars).length > 0;
+            const wantBanners = restoreSel.banners && data.banners && Object.keys(data.banners).length > 0;
+            if (wantAvatars) {
+              setRestoreProgress(t('share.progressAvatars'));
+              const entries = Object.entries(data.avatars!);
+              const avatarMap: Record<string, string> = {};
+              await parallelMap(entries, async ([memberId, raw]) => {
+                if (!raw) return;
+                const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
+                const fileUri = await saveAvatar(memberId, b64).catch(() => null);
+                if (fileUri) avatarMap[memberId] = fileUri;
+              }, 6, (done, total) => setRestoreProgress(t('share.progressAvatarsN', {done, total})));
+              membersAccum = membersAccum.map(m => avatarMap[m.id] ? {...m, avatar: avatarMap[m.id]} : m);
+              data.avatars = {};
             }
+            if (wantBanners) {
+              setRestoreProgress(t('share.progressBanners'));
+              const entries = Object.entries(data.banners!);
+              const bannerMap: Record<string, string> = {};
+              await parallelMap(entries, async ([memberId, raw]) => {
+                if (!raw) return;
+                const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
+                const fileUri = await saveBannerFromBase64(memberId, b64).catch(() => null);
+                if (fileUri) bannerMap[memberId] = fileUri;
+              }, 6, (done, total) => setRestoreProgress(t('share.progressBannersN', {done, total})));
+              membersAccum = membersAccum.map(m => bannerMap[m.id] ? {...m, banner: bannerMap[m.id]} : m);
+              data.banners = {};
+            }
+            setRestoreProgress(t('share.progressSavingMembers'));
+            await store.set(KEYS.members, membersAccum);
           } else if (restoreSel.avatars && !restoreSel.members) {
             if (data.avatars && Object.keys(data.avatars).length > 0) {
+              setRestoreProgress(t('share.progressAvatars'));
               const existing = await store.get<Member[]>(KEYS.members) || [];
-              const updated: Member[] = [];
-              for (const m of existing) {
-                const raw = data.avatars[m.id];
-                if (!raw) { updated.push(m); continue; }
-                delete data.avatars[m.id];
-                try {
-                  const b64 = raw.startsWith('data:') ? raw.split(',')[1] : raw;
-                  const fileUri = await saveAvatar(m.id, b64).catch(() => null);
-                  updated.push(fileUri ? {...m, avatar: fileUri} : m);
-                } catch { updated.push(m); }
-              }
+              const avatarMap: Record<string, string> = {};
+              const entries = Object.entries(data.avatars);
+              await parallelMap(entries, async ([memberId, raw]) => {
+                if (!raw) return;
+                const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
+                const fileUri = await saveAvatar(memberId, b64).catch(() => null);
+                if (fileUri) avatarMap[memberId] = fileUri;
+              }, 6, (done, total) => setRestoreProgress(t('share.progressAvatarsN', {done, total})));
+              const backupHasAvatar = new Set(entries.map(([id]) => id));
+              const updated = existing.map(m => {
+                if (avatarMap[m.id]) return {...m, avatar: avatarMap[m.id]};
+                if (backupHasAvatar.has(m.id)) return m;
+                return m.avatar ? {...m, avatar: undefined} : m;
+              });
               await store.set(KEYS.members, updated);
+              data.avatars = {};
             }
-          }
-          if (restoreSel.banners && data.banners && Object.keys(data.banners).length > 0) {
-            const currentMembers = await store.get<Member[]>(KEYS.members) || [];
-            const withBanners: Member[] = [...currentMembers];
-            let changed = false;
-            for (let i = 0; i < withBanners.length; i++) {
-              const memberId = withBanners[i].id;
-              const raw = data.banners[memberId];
-              if (!raw) continue;
-              delete data.banners[memberId];
-              try {
-                const b64 = raw.startsWith('data:') ? raw.split(',')[1] : raw;
+            if (restoreSel.banners && data.banners && Object.keys(data.banners).length > 0) {
+              setRestoreProgress(t('share.progressBanners'));
+              const current = await store.get<Member[]>(KEYS.members) || [];
+              const bannerMap: Record<string, string> = {};
+              const entries = Object.entries(data.banners);
+              await parallelMap(entries, async ([memberId, raw]) => {
+                if (!raw) return;
+                const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
                 const fileUri = await saveBannerFromBase64(memberId, b64).catch(() => null);
-                if (fileUri) { withBanners[i] = {...withBanners[i], banner: fileUri}; changed = true; }
-              } catch {}
+                if (fileUri) bannerMap[memberId] = fileUri;
+              }, 6, (done, total) => setRestoreProgress(t('share.progressBannersN', {done, total})));
+              const backupHasBanner = new Set(entries.map(([id]) => id));
+              const updated = current.map(m => {
+                if (bannerMap[m.id]) return {...m, banner: bannerMap[m.id]};
+                if (backupHasBanner.has(m.id)) return m;
+                return m.banner ? {...m, banner: undefined} : m;
+              });
+              await store.set(KEYS.members, updated);
+              data.banners = {};
             }
-            if (changed) await store.set(KEYS.members, withBanners);
+          } else if (restoreSel.banners && data.banners && Object.keys(data.banners).length > 0) {
+            setRestoreProgress(t('share.progressBanners'));
+            const current = await store.get<Member[]>(KEYS.members) || [];
+            const bannerMap: Record<string, string> = {};
+            const entries = Object.entries(data.banners);
+            await parallelMap(entries, async ([memberId, raw]) => {
+              if (!raw) return;
+              const b64 = (raw as string).startsWith('data:') ? (raw as string).split(',')[1] : (raw as string);
+              const fileUri = await saveBannerFromBase64(memberId, b64).catch(() => null);
+              if (fileUri) bannerMap[memberId] = fileUri;
+            }, 6, (done, total) => setRestoreProgress(t('share.progressBannersN', {done, total})));
+            const backupHasBanner2 = new Set(entries.map(([id]) => id));
+            const updated = current.map(m => {
+              if (bannerMap[m.id]) return {...m, banner: bannerMap[m.id]};
+              if (backupHasBanner2.has(m.id)) return m;
+              return m.banner ? {...m, banner: undefined} : m;
+            });
+            await store.set(KEYS.members, updated);
+            data.banners = {};
           }
           if (restoreSel.journal && data.journal) await store.set(KEYS.journal, data.journal);
           if (restoreSel.frontHistory && data.frontHistory) {
@@ -296,22 +665,21 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (restoreSel.chat) {
             if (data.chatChannels) await store.set(KEYS.chatChannels, data.chatChannels);
             if (data.chatMessages) {
-              const channelIds = Object.keys(data.chatMessages);
-              for (const chId of channelIds) {
+              setRestoreProgress(t('share.progressChat'));
+              const channelIds = Object.keys(data.chatMessages).filter(id => {
+                const msgs = data.chatMessages![id];
+                return Array.isArray(msgs) && msgs.length > 0;
+              });
+              await parallelMap(channelIds, async (chId) => {
                 try {
-                  const msgs = data.chatMessages[chId];
-                  if (!Array.isArray(msgs) || msgs.length === 0) {
-                    delete data.chatMessages[chId];
-                    continue;
-                  }
+                  const msgs = data.chatMessages![chId];
                   const {messages: migrated} = await migrateInlineChatMedia(msgs);
                   await store.set(chatMsgKey(chId), migrated);
-                  delete data.chatMessages[chId];
                 } catch (chErr) {
                   console.error(`[RESTORE] failed channel ${chId}:`, chErr);
-                  delete data.chatMessages[chId];
                 }
-              }
+              }, 4, (done, total) => setRestoreProgress(t('share.progressChatN', {done, total})));
+              data.chatMessages = {};
             }
           }
           if (restoreSel.settings || restoreSel.moods) {
@@ -331,15 +699,23 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (restoreSel.customFields && data.customFieldDefs) await store.set(KEYS.customFieldDefs, data.customFieldDefs);
           if (restoreSel.noteboards && data.noteboards) await store.set(KEYS.noteboards, data.noteboards);
           if (restoreSel.polls && data.polls) await store.set(KEYS.polls, data.polls);
+          if (restoreSel.journalTemplates && data.journalTemplates) await store.set(KEYS.journalTemplates, data.journalTemplates);
+          if (restoreSel.relationships && data.relationships) await store.set(KEYS.relationships, data.relationships);
+          if (restoreSel.relationships && data.relationshipTypes) await store.set(KEYS.relationshipTypes, data.relationshipTypes);
+            if (restoreSel.relationships && data.systemMapMembers) await store.set(KEYS.systemMapMembers, data.systemMapMembers);
+          if (restoreSel.medical && data.medical) await store.set(KEYS.medical, data.medical);
           setRestoreDone(true); setTimeout(() => onDataImported(), 800);
         } catch (e: any) {
           setRestoreError(e.message || 'Restore failed');
         } finally {
           setRestoring(false);
+          setRestoreProgress('');
           try {
-            const safeTempPath = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/ps_restore_pending.json`;
-            const exists = await ReactNativeBlobUtil.fs.exists(safeTempPath);
-            if (exists) await ReactNativeBlobUtil.fs.unlink(safeTempPath);
+            for (const f of ['ps_restore_pending.json', 'ps_restore_pending.zip']) {
+              const p = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/${f}`;
+              const exists = await ReactNativeBlobUtil.fs.exists(p);
+              if (exists) await ReactNativeBlobUtil.fs.unlink(p);
+            }
           } catch {}
         }
       }},
@@ -355,21 +731,20 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
       if (!meRes.ok) throw new Error(t('share.authFailed', {status: meRes.status}));
       const meData = await meRes.json();
       const userId = meData.id || meData.uid;
-      const [mRes, sRes, cfRes, gRes] = await Promise.all([
-        fetch(`https://v2.apparyllis.com/v1/members/${userId}`, {headers}),
-        fetch(`https://v2.apparyllis.com/v1/frontHistory/${userId}?startTime=0&endTime=${Date.now()}`, {headers}),
-        fetch(`https://v2.apparyllis.com/v1/customFields/${userId}`, {headers}),
-        fetch(`https://v2.apparyllis.com/v1/groups/${userId}`, {headers}),
-      ]);
-      let mData: any = []; let sData: any = []; let cfData: any = []; let gData: any = [];
-      try { mData = await mRes.json(); } catch { mData = []; }
-      try { sData = await sRes.json(); } catch { sData = []; }
-      try { cfData = await cfRes.json(); } catch { cfData = []; }
-      try { gData = await gRes.json(); } catch { gData = []; }
+      const mData = await spGet(`https://v2.apparyllis.com/v1/members/${userId}`, headers);
+      const sData = await spGet(`https://v2.apparyllis.com/v1/frontHistory/${userId}?startTime=0&endTime=${Date.now()}`, headers);
+      const cfData = await spGet(`https://v2.apparyllis.com/v1/customFields/${userId}`, headers);
+      const gData = await spGet(`https://v2.apparyllis.com/v1/groups/${userId}`, headers);
+      if (mData == null) throw new Error(t('share.spFetchPartial', {categories: t('share.memberProfiles')}));
+      const failedCats: string[] = [];
+      if (sData == null) failedCats.push(t('share.frontHistory'));
+      if (cfData == null) failedCats.push(t('customFields.title'));
+      if (gData == null) failedCats.push(t('share.groups'));
       const memberList = Array.isArray(mData) ? mData : (mData.members || []);
-      const switchList = Array.isArray(sData) ? sData : (sData.switches || sData.frontHistory || []);
-      const customFieldList = Array.isArray(cfData) ? cfData : (cfData.customFields || []);
-      const groupList = Array.isArray(gData) ? gData : (gData.groups || []);
+      const switchList = Array.isArray(sData) ? sData : (sData?.switches || sData?.frontHistory || []);
+      const customFieldList = Array.isArray(cfData) ? cfData : (cfData?.customFields || []);
+      const groupList = Array.isArray(gData) ? gData : (gData?.groups || []);
+      if (failedCats.length > 0) Alert.alert(t('share.importFailed'), t('share.spFetchPartial', {categories: failedCats.join(', ')}));
       const sanitized = memberList.map((m: any) => {
         if (m?.content?.name) m.content.name = String(m.content.name).replace(/[-\u001F\u007F]/g, '').trim();
         if (m?.name) m.name = String(m.name).replace(/[-\u001F\u007F]/g, '').trim();
@@ -384,7 +759,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
     if (!extToken.trim()) {Alert.alert(t('share.tokenRequired'), t('share.pkTokenRequiredMsg')); return;}
     setExtLoading(true); setExtPreview(null);
     try {
-      const headers = {Authorization: extToken.trim(), 'Content-Type': 'application/json', 'User-Agent': 'PluralStar/1.0'};
+      const headers = {Authorization: extToken.trim(), 'Content-Type': 'application/json', 'User-Agent': 'PluralStar/1.9.2'};
       const [sRes, mRes, swRes, gRes] = await Promise.all([
         fetch('https://api.pluralkit.me/v2/systems/@me', {headers}),
         fetch('https://api.pluralkit.me/v2/systems/@me/members', {headers}),
@@ -451,12 +826,624 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
     }).filter(h => h.memberIds.length > 0);
   };
 
+  const normHex = (c: any): string => { const s = String(c || '').trim(); return s.startsWith('#') ? s : (s ? `#${s}` : '#DAA520'); };
+
+  const mergeForeignMember = (merged: Member[], idMap: Record<string, string>, extId: string, incoming: Partial<Member>) => {
+    const bySource = merged.findIndex(em => em.sourceId === extId);
+    if (bySource >= 0) { merged[bySource] = {...merged[bySource], ...incoming, sourceId: extId}; idMap[extId.replace(/^[a-z]+:/, '')] = merged[bySource].id; return; }
+    const lower = String(incoming.name || '').toLowerCase();
+    const byName = merged.findIndex(em => !em.sourceId && em.name.toLowerCase() === lower);
+    if (byName >= 0) { merged[byName] = {...merged[byName], ...incoming, sourceId: extId}; idMap[extId.replace(/^[a-z]+:/, '')] = merged[byName].id; return; }
+    const nid = uid();
+    merged.push({id: nid, sourceId: extId, tags: [], groupIds: [], customFields: [], ...incoming} as Member);
+    idMap[extId.replace(/^[a-z]+:/, '')] = nid;
+  };
+
+  const finalizeMemberReplace = (merged: Member[], idMap: Record<string, string>): Member[] => {
+    const kept = new Set(Object.values(idMap));
+    return merged.filter(m => m.isCustomFront || kept.has(m.id));
+  };
+
+  const historySig = (e: HistoryEntry): string =>
+    `${e.startTime}|${[...(e.memberIds || [])].sort().join(',')}|${[...(e.coFrontIds || [])].sort().join(',')}|${[...(e.coConsciousIds || [])].sort().join(',')}|${e.changeType || 'front'}|${e.changeTime ?? ''}`;
+
+  const mergeHistoryEntries = (incoming: HistoryEntry[], existing: HistoryEntry[]): HistoryEntry[] => {
+    const map = new Map<string, HistoryEntry>();
+    for (const e of existing) map.set(historySig(e), e);
+    for (const e of incoming) map.set(historySig(e), e);
+    return [...map.values()].sort((a, b) => b.startTime - a.startTime);
+  };
+
+  const downloadAvatarsTo = async (urls: Record<string, string>) => {
+    const entries = Object.entries(urls);
+    if (entries.length === 0) return;
+    setRestoreProgress(t('share.progressAvatarsDownload'));
+    const downloaded: Record<string, string> = {};
+    await parallelMap(entries, async ([memberId, url]) => {
+      const fileUri = await downloadFirstAvatar(memberId, [url]);
+      if (fileUri) downloaded[memberId] = fileUri;
+    }, 4, (done, total) => setRestoreProgress(t('share.progressAvatarsDownloadN', {done, total})));
+    if (Object.keys(downloaded).length > 0) {
+      const cur = await store.get<Member[]>(KEYS.members, []) || [];
+      await store.set(KEYS.members, cur.map(m => downloaded[m.id] ? {...m, avatar: downloaded[m.id]} : m));
+    }
+  };
+
+  const importOurcana = async (rawData: any) => {
+    const ouSys = rawData.system || {};
+    const ouMembers: any[] = Array.isArray(rawData.members) ? rawData.members : [];
+    const ouFronts: any[] = Array.isArray(rawData.frontHistory) ? rawData.frontHistory : [];
+    const ouTags: any[] = Array.isArray(rawData.tags) ? rawData.tags : [];
+    if (restoreSel.system) {
+      const sys = await store.get<any>(KEYS.system, {}) || {};
+      await store.set(KEYS.system, {...sys, name: ouSys.name || sys.name, description: ouSys.desc || sys.description || ''});
+    }
+    const idMap: Record<string, string> = {};
+    if (restoreSel.members) {
+      const existing = await store.get<Member[]>(KEYS.members, []) || [];
+      const merged: Member[] = [...existing];
+      ouMembers.forEach((m: any) => {
+        const useDisplay = m.showOnlyDisplayName && m.displayName;
+        mergeForeignMember(merged, idMap, String(m.id), {
+          name: (useDisplay ? String(m.displayName) : String(m.name || '')).trim() || 'Unnamed member',
+          pronouns: String(m.pronouns || ''), role: '', color: normHex(m.color),
+          description: String(m.desc || ''), archived: !!m.archived,
+        });
+      });
+      await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
+    }
+    if (restoreSel.groups && ouTags.length > 0) {
+      const existingGroups = await store.get<MemberGroup[]>(KEYS.groups, []) || [];
+      const mergedGroups: MemberGroup[] = [...existingGroups];
+      const groupIdMap: Record<string, string> = {};
+      ouTags.forEach((tg: any) => {
+        const name = String(tg.label || tg.name || 'Group');
+        let g = mergedGroups.find(x => x.name.toLowerCase() === name.toLowerCase());
+        if (!g) { g = {id: uid(), name, color: tg.color ? normHex(tg.color) : undefined}; mergedGroups.push(g); }
+        groupIdMap[String(tg.id)] = g.id;
+      });
+      await store.set(KEYS.groups, mergedGroups);
+      const membersForGroups = await store.get<Member[]>(KEYS.members, []) || [];
+      const withGroups = membersForGroups.map(lm => {
+        const om = ouMembers.find((m: any) => idMap[String(m.id)] === lm.id);
+        if (!om || !Array.isArray(om.tagIds)) return lm;
+        const gids = om.tagIds.map((tid: any) => groupIdMap[String(tid)]).filter(Boolean) as string[];
+        if (gids.length === 0) return lm;
+        return {...lm, groupIds: [...new Set([...(lm.groupIds || []), ...gids])]};
+      });
+      await store.set(KEYS.members, withGroups);
+    }
+    if (restoreSel.frontHistory && ouFronts.length > 0) {
+      const switches = ouFronts.map((f: any) => ({content: {members: Array.isArray(f.memberIds) ? f.memberIds : [], startTime: f.startTime, endTime: f.isLive ? null : (f.endTime ?? null)}}));
+      const newH = convertSPSwitches(switches, idMap);
+      if (newH.length > 0) {
+        const merged = mergeHistoryEntries(newH, history);
+        await store.set(KEYS.history, merged);
+        const open = findOpenFrontInHistory(merged);
+        if (open) await store.set(KEYS.front, open);
+      }
+    }
+    if (restoreSel.avatars) {
+      const urls: Record<string, string> = {};
+      ouMembers.forEach((m: any) => { const localId = idMap[String(m.id)]; const url = String(m.avatarUrl || ''); if (localId && /^https?:\/\//.test(url)) urls[localId] = url; });
+      await downloadAvatarsTo(urls);
+    }
+  };
+
+  const importMultiplicity = async (rawData: any) => {
+    const sys = rawData.system || {};
+    const alters: any[] = Array.isArray(rawData.alters) ? rawData.alters : [];
+    const fronts: any[] = Array.isArray(rawData.front_entries) ? rawData.front_entries : [];
+    if (restoreSel.system) {
+      const cur = await store.get<any>(KEYS.system, {}) || {};
+      await store.set(KEYS.system, {...cur, name: sys.name || cur.name, description: sys.description || cur.description || ''});
+    }
+    const idMap: Record<string, string> = {};
+    if (restoreSel.members) {
+      const existing = await store.get<Member[]>(KEYS.members, []) || [];
+      const merged: Member[] = [...existing];
+      alters.forEach((a: any) => {
+        mergeForeignMember(merged, idMap, 'mx:' + String(a.alter_id), {
+          name: (a.name && String(a.name).trim()) || (a.display_name && String(a.display_name).trim()) || 'Unnamed member',
+          pronouns: String(a.pronouns || ''), role: '', color: normHex(a.colour),
+          description: String(a.description || ''), archived: !!a.is_archived,
+        });
+      });
+      await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
+    }
+    if (restoreSel.frontHistory && fronts.length > 0) {
+      const switches = fronts.map((f: any) => ({content: {member: String(f.alter_id), startTime: f.start_time, endTime: f.end_time ?? null, comment: f.notes || ''}}));
+      const newH = convertSPSwitches(switches, idMap);
+      if (newH.length > 0) {
+        const merged = mergeHistoryEntries(newH, history);
+        await store.set(KEYS.history, merged);
+        const open = findOpenFrontInHistory(merged);
+        if (open) await store.set(KEYS.front, open);
+      }
+    }
+    if (restoreSel.avatars) {
+      const b64Map: Record<string, string> = {};
+      const urlMap: Record<string, string> = {};
+      alters.forEach((a: any) => {
+        const localId = idMap[String(a.alter_id)];
+        if (!localId) return;
+        if (a.avatar_data) b64Map[localId] = String(a.avatar_data);
+        else if (/^https?:\/\//.test(String(a.avatar_url || ''))) urlMap[localId] = String(a.avatar_url);
+      });
+      const b64Entries = Object.entries(b64Map);
+      if (b64Entries.length > 0) {
+        setRestoreProgress(t('share.progressAvatars'));
+        const map: Record<string, string> = {};
+        await parallelMap(b64Entries, async ([memberId, b64]) => {
+          const raw = b64.startsWith('data:') ? b64.split(',')[1] : b64;
+          const fileUri = await saveAvatar(memberId, raw).catch(() => null);
+          if (fileUri) map[memberId] = fileUri;
+        }, 6, (done, total) => setRestoreProgress(t('share.progressAvatarsN', {done, total})));
+        if (Object.keys(map).length > 0) {
+          const cur = await store.get<Member[]>(KEYS.members, []) || [];
+          await store.set(KEYS.members, cur.map(m => map[m.id] ? {...m, avatar: map[m.id]} : m));
+        }
+      }
+      await downloadAvatarsTo(urlMap);
+    }
+  };
+
+  const psTime = (v: any): number => { if (!v) return 0; const ms = new Date(String(v)).getTime(); return isNaN(ms) ? 0 : ms; };
+
+  const convertPluralSpaceFronts = (fronts: any[], idMap: Record<string, string>): HistoryEntry[] => {
+    type PsEntry = {mid: string; tier: 'front' | 'co_front' | 'co_con'; startTime: number; endTime: number | null; note: string};
+    const parsed: PsEntry[] = fronts.map((f: any) => {
+      const mid = idMap[String(f.member_id)] || '';
+      const startTime = psTime(f.started_at);
+      const endTime = f.is_live ? null : (f.ended_at ? psTime(f.ended_at) : null);
+      const tier: PsEntry['tier'] = f.type === 'co_front' ? 'co_front' : f.type === 'co_con' ? 'co_con' : 'front';
+      return {mid, tier, startTime, endTime: endTime === 0 ? null : endTime, note: String(f.comment || '')};
+    }).filter(e => e.mid && e.startTime > 0);
+    parsed.sort((a, b) => a.startTime - b.startTime);
+    const OVERLAP_TOLERANCE = 60 * 1000;
+    const groups: PsEntry[][] = [];
+    const used = new Set<number>();
+    for (let i = 0; i < parsed.length; i++) {
+      if (used.has(i)) continue;
+      const group = [parsed[i]]; used.add(i);
+      for (let j = i + 1; j < parsed.length; j++) {
+        if (used.has(j)) continue;
+        const a = parsed[i]; const b = parsed[j];
+        const aEnd = a.endTime ?? Date.now(); const bEnd = b.endTime ?? Date.now();
+        if (Math.abs(a.startTime - b.startTime) <= OVERLAP_TOLERANCE || (b.startTime < aEnd && a.startTime < bEnd)) { group.push(b); used.add(j); }
+      }
+      groups.push(group);
+    }
+    return groups.map(group => {
+      let main = [...new Set(group.filter(e => e.tier === 'front').map(e => e.mid))];
+      let coF = [...new Set(group.filter(e => e.tier === 'co_front').map(e => e.mid))].filter(id => !main.includes(id));
+      const coC = [...new Set(group.filter(e => e.tier === 'co_con').map(e => e.mid))].filter(id => !main.includes(id) && !coF.includes(id));
+      if (main.length === 0 && coF.length > 0) { main = coF; coF = []; }
+      const startTime = Math.min(...group.map(e => e.startTime));
+      const endTimes = group.map(e => e.endTime);
+      const endTime = endTimes.includes(null) ? null : Math.max(...(endTimes as number[]));
+      const notes = [...new Set(group.map(e => e.note).filter(Boolean))];
+      return {
+        memberIds: main, startTime, endTime, note: notes.join(' | '), mood: undefined, location: undefined,
+        coFrontIds: coF.length > 0 ? coF : undefined,
+        coConsciousIds: coC.length > 0 ? coC : undefined,
+      } as HistoryEntry;
+    }).filter(h => h.memberIds.length > 0);
+  };
+
+  const handlePluralSpacePick = async () => {
+    setRestoreError(''); setExtPreview(null); setImportStatus('idle'); setImportMsg(''); setPsAvatarIndex(null); setPsZipFiles(null);
+    try {
+      const [res] = await safePick({type: ['application/json', 'application/zip', 'text/plain']});
+      const path = getPickedFilePath(res);
+      const isZip = /\.zip$/i.test(res.name || '') || /\.zip$/i.test(path);
+      let parsed: any;
+      if (isZip) {
+        let bundle: {files: Record<string, Uint8Array>; data: any | null} | null = null;
+        try { bundle = await readZipBundle(path); }
+        catch { bundle = await readZipBundle(res.uri || path); }
+        parsed = bundle?.data;
+        if (!parsed) throw new Error(t('share.psNotExport'));
+        setPsZipFiles(bundle!.files);
+      } else {
+        let raw: string;
+        try { raw = await ReactNativeBlobUtil.fs.readFile(path, 'utf8'); }
+        catch { raw = await ReactNativeBlobUtil.fs.readFile(res.uri || path, 'utf8'); }
+        try { parsed = JSON.parse(raw); } catch { throw new Error(t('share.psNotExport')); }
+      }
+      const ok = !parsed._meta && parsed.system && typeof parsed.system === 'object' && Array.isArray(parsed.members) && Array.isArray(parsed.fronts);
+      if (!ok) throw new Error(t('share.psNotExport'));
+      setExtPreview({
+        system: parsed.system,
+        members: parsed.members,
+        switches: parsed.fronts,
+        customFields: Array.isArray(parsed.custom_fields) ? parsed.custom_fields : [],
+        groups: Array.isArray(parsed.member_groups) ? parsed.member_groups : [],
+        journal: Array.isArray(parsed.journal_entries) ? parsed.journal_entries : [],
+        chat: Array.isArray(parsed.chat_channels) ? parsed.chat_channels : [],
+        polls: Array.isArray(parsed.polls) ? parsed.polls : [],
+      });
+    } catch (e: any) { if (!isPickerCancel(e)) Alert.alert(t('share.importFailed'), e.message || 'Could not read file.'); }
+  };
+
+  const handlePluralSpaceConfirm = () => {
+    if (!extPreview) return;
+    Alert.alert(t('share.importData'), t('share.importAddDataMsg'), [
+      {text: t('common.cancel'), style: 'cancel'},
+      {text: t('share.importBtn'), onPress: async () => {
+        try {
+          const psMembers: any[] = extPreview.members || [];
+          const psFronts: any[] = extPreview.switches || [];
+          const psFieldDefs: any[] = extPreview.customFields || [];
+          const psGroups: any[] = extPreview.groups || [];
+          const psJournal: any[] = extPreview.journal || [];
+          const psChat: any[] = extPreview.chat || [];
+          const psPolls: any[] = extPreview.polls || [];
+
+          if (extSel.system && extPreview.system?.name) {
+            await store.set(KEYS.system, {...system, name: String(extPreview.system.name) || system.name, description: String(extPreview.system.description || '') || system.description});
+          }
+
+          const idMap: Record<string, string> = {};
+          if (extSel.members) {
+            const existing = await store.get<Member[]>(KEYS.members, []) || [];
+            const merged: Member[] = [...existing];
+            psMembers.forEach((m: any) => {
+              mergeForeignMember(merged, idMap, 'ps:' + String(m.id), {
+                name: (m.name && String(m.name).trim()) || (m.display_name && String(m.display_name).trim()) || 'Unnamed member',
+                pronouns: String(m.pronouns || ''),
+                role: Array.isArray(m.role) ? m.role.join(', ') : String(m.role || ''),
+                color: normHex(m.color),
+                description: String(m.description || ''),
+                archived: !!m.is_archived,
+                isCustomFront: !!m.is_custom_front,
+                createdAt: psTime(m.created_at) || undefined,
+              });
+            });
+            await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
+          } else {
+            const existing = await store.get<Member[]>(KEYS.members, []) || [];
+            psMembers.forEach((m: any) => { const ex = existing.find(em => em.sourceId === 'ps:' + String(m.id)); if (ex) idMap[String(m.id)] = ex.id; });
+          }
+
+          const nameToLocal: Record<string, string> = {};
+          psMembers.forEach((m: any) => {
+            const lid = idMap[String(m.id)];
+            if (!lid) return;
+            const n = String(m.name || '').trim().toLowerCase();
+            if (n) nameToLocal[n] = lid;
+            const dn = String(m.display_name || '').trim().toLowerCase();
+            if (dn && !nameToLocal[dn]) nameToLocal[dn] = lid;
+          });
+          const allLocalMembers = await store.get<Member[]>(KEYS.members, []) || [];
+          allLocalMembers.forEach(m => { const k = (m.name || '').trim().toLowerCase(); if (k && !nameToLocal[k]) nameToLocal[k] = m.id; });
+
+          if (extSel.customFields) {
+            const existingDefs = await store.get<CustomFieldDef[]>(KEYS.customFieldDefs, []) || [];
+            const newDefs: CustomFieldDef[] = [];
+            const fieldIdByName: Record<string, string> = {};
+            const PS_TYPE_MAP: Record<string, CustomFieldType> = {text: 'text', number: 'number', boolean: 'toggle', toggle: 'toggle', date: 'date', color: 'color', markdown: 'markdown'};
+            psFieldDefs.forEach((f: any, i: number) => {
+              const name = String(f.name || `Field ${i + 1}`).trim();
+              const key = name.toLowerCase();
+              if (fieldIdByName[key]) return;
+              const existing = existingDefs.find(d => d.name.toLowerCase() === key);
+              if (existing) { fieldIdByName[key] = existing.id; return; }
+              const localId = uid();
+              newDefs.push({id: localId, name, type: PS_TYPE_MAP[String(f.field_type)] || 'text', sortOrder: i});
+              fieldIdByName[key] = localId;
+            });
+            psMembers.forEach((m: any) => (Array.isArray(m.custom_field_values) ? m.custom_field_values : []).forEach((cv: any) => {
+              const name = String(cv.field_name || '').trim();
+              if (!name) return;
+              const key = name.toLowerCase();
+              if (fieldIdByName[key]) return;
+              const existing = existingDefs.find(d => d.name.toLowerCase() === key);
+              if (existing) { fieldIdByName[key] = existing.id; return; }
+              const localId = uid();
+              newDefs.push({id: localId, name, type: 'text', sortOrder: psFieldDefs.length + newDefs.length});
+              fieldIdByName[key] = localId;
+            }));
+            if (newDefs.length > 0) await store.set(KEYS.customFieldDefs, [...existingDefs, ...newDefs]);
+            const cur = await store.get<Member[]>(KEYS.members, []) || [];
+            const updated = cur.map(lm => {
+              const ps = psMembers.find((m: any) => idMap[String(m.id)] === lm.id);
+              if (!ps || !Array.isArray(ps.custom_field_values) || ps.custom_field_values.length === 0) return lm;
+              const grouped: Record<string, string[]> = {};
+              ps.custom_field_values.forEach((cv: any) => {
+                const key = String(cv.field_name || '').trim().toLowerCase();
+                if (!key || cv.value == null) return;
+                (grouped[key] = grouped[key] || []).push(String(cv.value));
+              });
+              const cf: CustomFieldValue[] = [...(lm.customFields || [])];
+              Object.entries(grouped).forEach(([key, vals]) => {
+                const fid = fieldIdByName[key];
+                if (!fid) return;
+                const valStr = vals.join('\n');
+                const idx = cf.findIndex(c => c.fieldId === fid);
+                if (idx >= 0) cf[idx] = {fieldId: fid, value: valStr};
+                else cf.push({fieldId: fid, value: valStr});
+              });
+              return {...lm, customFields: cf};
+            });
+            await store.set(KEYS.members, updated);
+          }
+
+          if (extSel.groups && psGroups.length > 0) {
+            const existingGroups = await store.get<MemberGroup[]>(KEYS.groups, []) || [];
+            const mergedGroups: MemberGroup[] = [...existingGroups];
+            const groupIdMap: Record<string, string> = {};
+            psGroups.forEach((g: any) => {
+              const name = String(g?.name || 'Group');
+              let lg = mergedGroups.find(x => x.name.toLowerCase() === name.toLowerCase());
+              if (!lg) { lg = {id: uid(), name, color: g?.color ? normHex(g.color) : undefined}; mergedGroups.push(lg); }
+              groupIdMap[String(g?.id)] = lg.id;
+              groupIdMap[name.toLowerCase()] = lg.id;
+            });
+            await store.set(KEYS.groups, mergedGroups);
+            const cur = await store.get<Member[]>(KEYS.members, []) || [];
+            const withGroups = cur.map(lm => {
+              const ps = psMembers.find((m: any) => idMap[String(m.id)] === lm.id);
+              if (!ps || !Array.isArray(ps.groups) || ps.groups.length === 0) return lm;
+              const gids = ps.groups.map((g: any) => {
+                const k = typeof g === 'object' && g !== null ? String(g.id ?? g.name ?? '') : String(g);
+                return groupIdMap[k] || groupIdMap[k.toLowerCase()];
+              }).filter(Boolean) as string[];
+              if (gids.length === 0) return lm;
+              return {...lm, groupIds: [...new Set([...(lm.groupIds || []), ...gids])]};
+            });
+            await store.set(KEYS.members, withGroups);
+          }
+
+          if (extSel.frontHistory && psFronts.length > 0) {
+            const newH = convertPluralSpaceFronts(psFronts, idMap);
+            if (newH.length > 0) {
+              const merged = mergeHistoryEntries(newH, history);
+              await store.set(KEYS.history, merged);
+              const open = findOpenFrontInHistory(merged);
+              if (open) await store.set(KEYS.front, open);
+            }
+          }
+
+          if (extSel.journal && psJournal.length > 0) {
+            const existingJ = await store.get<JournalEntry[]>(KEYS.journal, []) || [];
+            const newJ: JournalEntry[] = psJournal.map((j: any) => ({
+              id: uid(),
+              title: String(j.title || '').trim(),
+              body: String(j.content || ''),
+              authorIds: (Array.isArray(j.members) ? j.members : []).map((m: any) => idMap[String(m?.id)] || nameToLocal[String(m?.name || '').trim().toLowerCase()]).filter(Boolean) as string[],
+              hashtags: [],
+              timestamp: psTime(j.date) || psTime(j.created_at) || Date.now(),
+            }));
+            const jSig = (j: JournalEntry) => `${j.timestamp}|${j.title}`;
+            const existingJSigs = new Set(existingJ.map(jSig));
+            const mergedJ = [...newJ.filter(j => !existingJSigs.has(jSig(j))), ...existingJ].sort((a, b) => b.timestamp - a.timestamp);
+            await store.set(KEYS.journal, mergedJ);
+          }
+
+          if (extSel.chat && psChat.length > 0) {
+            const existingCh = await store.get<ChatChannel[]>(KEYS.chatChannels, []) || [];
+            const mergedCh: ChatChannel[] = [...existingCh];
+            for (const ch of psChat) {
+              const chName = String(ch?.name || '').trim() || 'Imported';
+              let local = mergedCh.find(c => c.name.toLowerCase() === chName.toLowerCase());
+              if (!local) { local = {id: uid(), name: chName, createdAt: psTime(ch?.created_at) || Date.now()}; mergedCh.push(local); }
+              const msgs: any[] = Array.isArray(ch?.messages) ? ch.messages : [];
+              if (msgs.length > 0) {
+                const existingMsgs = await store.get<ChatMessage[]>(chatMsgKey(local.id), []) || [];
+                const newMsgs: ChatMessage[] = msgs.map((msg: any) => ({
+                  id: uid(),
+                  channelId: local!.id,
+                  authorId: nameToLocal[String(msg?.member_name || '').trim().toLowerCase()] || '',
+                  type: 'text' as const,
+                  content: String(msg?.content || ''),
+                  timestamp: psTime(msg?.created_at) || Date.now(),
+                }));
+                const msgSig = (x: ChatMessage) => `${x.timestamp}|${x.authorId}|${x.content}`;
+                const existingMsgSigs = new Set(existingMsgs.map(msgSig));
+                const mergedMsgs = [...existingMsgs, ...newMsgs.filter(x => !existingMsgSigs.has(msgSig(x)))].sort((a, b) => a.timestamp - b.timestamp);
+                await store.set(chatMsgKey(local.id), mergedMsgs);
+              }
+            }
+            await store.set(KEYS.chatChannels, mergedCh);
+          }
+
+          if (extSel.polls && psPolls.length > 0) {
+            const existingPolls = await store.get<MemberPoll[]>(KEYS.polls, []) || [];
+            const newPolls: MemberPoll[] = psPolls.map((p: any) => {
+              const creator = idMap[String(p?.created_by_member?.id)] || nameToLocal[String(p?.created_by_member?.name || '').trim().toLowerCase()] || '';
+              const desc = String(p?.description || '').trim();
+              return {
+                id: uid(),
+                targetMemberId: creator,
+                question: [String(p?.title || '').trim(), desc].filter(Boolean).join(' — ') || '?',
+                options: (Array.isArray(p?.options) ? p.options : []).map((o: any) => ({
+                  id: uid(),
+                  label: String(o?.text || ''),
+                  votes: [...new Set((Array.isArray(o?.votes) ? o.votes : []).map((v: any) => nameToLocal[String(v?.member_name || '').trim().toLowerCase()]).filter(Boolean))] as string[],
+                })),
+                createdBy: creator,
+                createdAt: psTime(p?.created_at) || Date.now(),
+                closedAt: p?.status && p.status !== 'open' ? (psTime(p?.closes_at) || Date.now()) : undefined,
+              };
+            });
+            const pollSig = (p: MemberPoll) => `${p.createdAt}|${p.question}`;
+            const existingPollSigs = new Set(existingPolls.map(pollSig));
+            await store.set(KEYS.polls, [...existingPolls, ...newPolls.filter(p => !existingPollSigs.has(pollSig(p)))]);
+          }
+
+          const avIndex: Record<string, string> = {};
+          psMembers.forEach((m: any) => {
+            const lid = idMap[String(m.id)];
+            const p = String(m.avatar_media_path || '');
+            if (!lid || !p) return;
+            const base = (p.split('/').pop() || '').toLowerCase();
+            if (base) avIndex[base] = lid;
+          });
+          if (extSel.avatars && psZipFiles) {
+            setRestoreProgress(t('share.progressAvatars'));
+            const saved: Record<string, string> = {};
+            const withA = psMembers.filter((m: any) => idMap[String(m.id)] && m.avatar_media_path && psZipFiles[String(m.avatar_media_path)]);
+            let done = 0;
+            for (const m of withA) {
+              const lid = idMap[String(m.id)];
+              const uri = await saveAvatar(lid, base64FromU8(psZipFiles[String(m.avatar_media_path)])).catch(() => null);
+              if (uri) saved[lid] = uri;
+              done++; setRestoreProgress(t('share.progressAvatarsN', {done, total: withA.length}));
+            }
+            if (Object.keys(saved).length > 0) {
+              const cur = await store.get<Member[]>(KEYS.members, []) || [];
+              await store.set(KEYS.members, cur.map(m => saved[m.id] ? {...m, avatar: saved[m.id]} : m));
+            }
+            setRestoreProgress('');
+            setPsAvatarIndex(null);
+          } else {
+            setPsAvatarIndex(extSel.avatars && Object.keys(avIndex).length > 0 ? avIndex : null);
+          }
+
+          if (extSel.avatars && !psZipFiles) {
+            const urls: Record<string, string> = {};
+            psMembers.forEach((m: any) => { const lid = idMap[String(m.id)]; const u = String(m.avatar_path || ''); if (lid && /^https?:\/\//.test(u)) urls[lid] = u; });
+            await downloadAvatarsTo(urls);
+          }
+
+          setImportStatus('success'); setImportMsg(t('share.importComplete'));
+          setExtPreview(null);
+          setTimeout(() => onDataImported(), 800);
+        } catch (e: any) { setImportStatus('error'); setImportMsg(e.message || 'Import failed.'); }
+      }},
+    ]);
+  };
+
+  const handlePluralSpaceAvatarsPick = async () => {
+    if (!psAvatarIndex) return;
+    try {
+      const results = await safePick({type: ['image/*'], allowMultiSelection: true});
+      if (!results || results.length === 0) return;
+      setRestoreProgress(t('share.progressAvatars'));
+      const saved: Record<string, string> = {};
+      await parallelMap(results, async (res: any) => {
+        const path = getPickedFilePath(res);
+        const base = String(res.name || path.split('/').pop() || '').trim().toLowerCase();
+        const memberId = psAvatarIndex[base];
+        if (!memberId) return;
+        let b64: string;
+        try { b64 = await ReactNativeBlobUtil.fs.readFile(path, 'base64'); }
+        catch { b64 = await ReactNativeBlobUtil.fs.readFile(res.uri || path, 'base64'); }
+        const fileUri = await saveAvatar(memberId, b64).catch(() => null);
+        if (fileUri) saved[memberId] = fileUri;
+      }, 4, (done, total) => setRestoreProgress(t('share.progressAvatarsN', {done, total})));
+      setRestoreProgress('');
+      const count = Object.keys(saved).length;
+      if (count > 0) {
+        const cur = await store.get<Member[]>(KEYS.members, []) || [];
+        await store.set(KEYS.members, cur.map(m => saved[m.id] ? {...m, avatar: saved[m.id]} : m));
+        setImportStatus('success'); setImportMsg(t('share.psAvatarsImported', {count}));
+        setPsAvatarIndex(null);
+        onDataImported();
+      } else {
+        setImportStatus('error'); setImportMsg(t('share.psAvatarsNoMatch'));
+      }
+    } catch (e: any) { if (!isPickerCancel(e)) { setRestoreProgress(''); setImportStatus('error'); setImportMsg(e.message || 'Could not import avatars.'); } }
+  };
+
+  const handleAmpersandPick = async () => {
+    setRestoreError(''); setExtPreview(null); setImportStatus('idle'); setImportMsg('');
+    try {
+      const [res] = await safePick({type: ['*/*']});
+      const path = getPickedFilePath(res);
+      let b64: string;
+      try { b64 = await ReactNativeBlobUtil.fs.readFile(path, 'base64'); }
+      catch { b64 = await ReactNativeBlobUtil.fs.readFile(res.uri || path, 'base64'); }
+      const tables = parseAmpar(b64);
+      const amMembers = tables.members || [];
+      const fronting = tables.frontingEntries || [];
+      const systemRow = (tables.systems || [])[0] || {name: t('share.system')};
+      const fieldDefs = tables.customFields || [];
+      if (amMembers.length === 0 && fronting.length === 0) {
+        throw new Error(t('share.amparEmpty'));
+      }
+      setExtPreview({system: systemRow, members: amMembers, switches: fronting, customFields: fieldDefs});
+      setImportSource('ampersand');
+    } catch (e: any) { if (!isPickerCancel(e)) Alert.alert(t('share.importFailed'), e.message || 'Could not read .ampar file.'); }
+  };
+
+  const handleAmpersandConfirm = () => {
+    if (!extPreview) return;
+    Alert.alert(t('share.importData'), t('share.importAddDataMsg'), [
+      {text: t('common.cancel'), style: 'cancel'},
+      {text: t('share.importBtn'), onPress: async () => {
+        try {
+          const amMembers = extPreview.members || [];
+          const amFronts = extPreview.switches || [];
+          const amFields = extPreview.customFields || [];
+          const idMap: Record<string, string> = {};
+
+          if (extSel.system && extPreview.system?.name) {
+            await store.set(KEYS.system, {...system, name: String(extPreview.system.name) || system.name});
+          }
+
+          const fieldIdMap: Record<string, string> = {};
+          if (extSel.customFields) {
+            const defs: CustomFieldDef[] = amFields.map((f: any, i: number) => {
+              const localId = uid();
+              fieldIdMap[String(f.uuid)] = localId;
+              return {id: localId, name: String(f.name || `Field ${i + 1}`), type: 'text', sortOrder: f.priority ?? i};
+            });
+            await store.set(KEYS.customFieldDefs, defs);
+          }
+
+          if (extSel.members) {
+            const newMembers: Member[] = amMembers.map((a: any) => {
+              const localId = uid();
+              idMap[String(a.uuid)] = localId;
+              const cf: CustomFieldValue[] = [];
+              const pairs = a.customFields?.value;
+              if (extSel.customFields && Array.isArray(pairs)) {
+                pairs.forEach((pair: any) => {
+                  if (!Array.isArray(pair) || pair.length < 2) return;
+                  const fid = fieldIdMap[String(pair[0])];
+                  if (!fid || pair[1] == null) return;
+                  cf.push({fieldId: fid, value: (typeof pair[1] === 'object' ? JSON.stringify(pair[1]) : String(pair[1])) as any});
+                });
+              }
+              return {
+                id: localId, sourceId: 'amp:' + String(a.uuid),
+                name: (a.name && String(a.name).trim()) || 'Unnamed member',
+                pronouns: String(a.pronouns || ''), role: '', color: normHex(a.color),
+                description: String(a.description || ''), archived: !!a.isArchived, isCustomFront: !!a.isCustomFront,
+                tags: [], groupIds: [], customFields: cf,
+              } as Member;
+            });
+            await store.set(KEYS.members, newMembers);
+          } else {
+            // Members not being replaced — map archive uuids onto existing amp: members so history still resolves.
+            const existing = await store.get<Member[]>(KEYS.members, []) || [];
+            amMembers.forEach((a: any) => { const ex = existing.find(m => m.sourceId === 'amp:' + String(a.uuid)); if (ex) idMap[String(a.uuid)] = ex.id; });
+          }
+
+          if (extSel.frontHistory) {
+            const switches = amFronts.map((f: any) => ({content: {member: String(f.member), startTime: f.startTime, endTime: f.endTime ?? null}}));
+            const newH = convertSPSwitches(switches, idMap);
+            await store.set(KEYS.history, mergeHistoryEntries(newH, history));
+            await store.set(KEYS.front, findOpenFrontInHistory(newH) || null);
+          }
+
+          setImportStatus('success'); setImportMsg(t('share.importComplete'));
+          setExtPreview(null);
+          setTimeout(() => onDataImported(), 800);
+        } catch (e: any) { setImportStatus('error'); setImportMsg(e.message || 'Import failed.'); }
+      }},
+    ]);
+  };
+
   const handleExtImport = () => {
     if (!extPreview) return;
     const isPK = importSource === 'pluralkit';
     Alert.alert(t('share.importData'), t('share.importAddDataMsg'), [
       {text: t('common.cancel'), style: 'cancel'},
       {text: t('share.importBtn'), onPress: async () => {
+        try {
         if (extSel.system && extPreview.system) {
           const name = isPK ? extPreview.system.name : (extPreview.system.content?.username || extPreview.system.content?.name || extPreview.system.username || extPreview.system.name || system.name);
           const desc = isPK ? (extPreview.system.description || system.description) : (extPreview.system.content?.desc || extPreview.system.content?.description || extPreview.system.description || system.description);
@@ -468,7 +1455,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           extPreview.members.forEach((m: any) => {
             const extId: string = isPK ? (m.uuid || m.id) : m._id || m.id;
             const incoming: Partial<Member> = {
-              name: isPK ? (m.display_name || m.name || 'Unknown') : (m.content?.name || m.name || 'Unknown'),
+              name: isPK ? (m.name || m.display_name || 'Unknown') : (m.content?.name || m.name || 'Unknown'),
               pronouns: isPK ? (m.pronouns || '') : (m.content?.pronouns || ''),
               role: isPK ? '' : (m.content?.role || ''),
               color: isPK ? (m.color ? `#${m.color}` : '#DAA520') : (m.content?.color || '#DAA520'),
@@ -506,42 +1493,35 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             if (extId) idMap[extId] = newId;
             if (isPK && m.id && m.id !== extId) idMap[m.id] = newId;
           });
-          await store.set(KEYS.members, merged);
-          const avatarUrls: Record<string, string> = {};
+          await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
+          const avatarCandidates: Record<string, string[]> = {};
           if (extSel.avatars) {
+            const spFallbackUid = String((extPreview.system && (extPreview.system.id || extPreview.system.uid || extPreview.system.content?.uid)) || extPreview.members.find((x: any) => x.content?.uid || x.uid)?.content?.uid || extPreview.members.find((x: any) => x.uid)?.uid || '');
             extPreview.members.forEach((m: any) => {
               const extId: string = isPK ? (m.uuid || m.id) : m._id || m.id;
               const localId = extId ? idMap[extId] : undefined;
               if (!localId) return;
-              let avatarUrl = '';
               if (isPK) {
-                avatarUrl = m.avatar_url || '';
+                const u = normalizeSpAvatarUrl(m.avatar_url);
+                if (u) avatarCandidates[localId] = [u];
               } else {
-                if (m.content?.avatarUrl) {
-                  avatarUrl = m.content.avatarUrl;
-                } else if (m.content?.avatarUuid) {
-                  const ownerUid = m.content?.uid || m.uid;
-                  avatarUrl = ownerUid
-                    ? `https://spaces.apparyllis.com/avatars/${ownerUid}/${m.content.avatarUuid}`
-                    : `https://spaces.apparyllis.com/avatars/${m.content.avatarUuid}`;
-                } else if (m.avatarUrl) {
-                  avatarUrl = m.avatarUrl;
-                }
+                const cands = spAvatarCandidates(m.content || m, spFallbackUid);
+                if (cands.length) avatarCandidates[localId] = cands;
               }
-              if (avatarUrl) avatarUrls[localId] = avatarUrl;
             });
           }
-          const avatarEntries = Object.entries(avatarUrls);
+          const avatarEntries = Object.entries(avatarCandidates);
           if (avatarEntries.length > 0) {
-            const withAvatars = [...merged];
-            for (const [memberId, url] of avatarEntries) {
-              const avatar = await saveAvatarFromUrl(memberId, url);
-              if (avatar) {
-                const idx = withAvatars.findIndex(m => m.id === memberId);
-                if (idx >= 0) withAvatars[idx] = {...withAvatars[idx], avatar};
-              }
-            }
+            setRestoreProgress(t('share.progressAvatarsDownload'));
+            const avatarResults: Record<string, string> = {};
+            await parallelMap(avatarEntries, async ([memberId, urls]) => {
+              const avatar = await downloadFirstAvatar(memberId, urls as string[]);
+              if (avatar) avatarResults[memberId] = avatar;
+            }, 4, (done, total) => setRestoreProgress(t('share.progressAvatarsDownloadN', {done, total})));
+            const withAvatars = finalizeMemberReplace(merged, idMap).map(m => avatarResults[m.id] ? {...m, avatar: avatarResults[m.id]} : m);
             await store.set(KEYS.members, withAvatars);
+            const avOk = Object.keys(avatarResults).length;
+            if (avOk < avatarEntries.length) Alert.alert(t('share.profilePictures'), t('share.avatarsDownloaded', {done: avOk, total: avatarEntries.length}));
           }
           if (isPK && extSel.banners) {
             const bannerUrls: Record<string, string> = {};
@@ -554,21 +1534,21 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             });
             const bannerEntries = Object.entries(bannerUrls);
             if (bannerEntries.length > 0) {
-              const currentMembers = await store.get<Member[]>(KEYS.members) || [];
-              const withBanners = [...currentMembers];
-              let changed = false;
-              for (const [memberId, url] of bannerEntries) {
-                const banner = await saveBannerFromUrl(memberId, url);
-                if (banner) {
-                  const idx = withBanners.findIndex(m => m.id === memberId);
-                  if (idx >= 0) { withBanners[idx] = {...withBanners[idx], banner}; changed = true; }
-                }
+              setRestoreProgress(t('share.progressBannersDownload'));
+              const bannerResults: Record<string, string> = {};
+              await parallelMap(bannerEntries, async ([memberId, url]) => {
+                const banner = await saveBannerFromUrl(memberId, url).catch(() => undefined);
+                if (banner) bannerResults[memberId] = banner;
+              }, 4, (done, total) => setRestoreProgress(t('share.progressBannersDownloadN', {done, total})));
+              if (Object.keys(bannerResults).length > 0) {
+                const currentMembers = await store.get<Member[]>(KEYS.members) || [];
+                const withBanners = currentMembers.map(m => bannerResults[m.id] ? {...m, banner: bannerResults[m.id]} : m);
+                await store.set(KEYS.members, withBanners);
               }
-              if (changed) await store.set(KEYS.members, withBanners);
             }
           }
           if (!isPK && extSel.customFields && extPreview.customFields && extPreview.customFields.length > 0) {
-            const SP_TYPE_MAP: Record<string, CustomFieldType> = {'0': 'text', '1': 'number', '2': 'toggle', '3': 'date', '4': 'monthYear', '5': 'month', '6': 'year', 'text': 'text', 'number': 'number', 'checkbox': 'toggle', 'toggle': 'toggle', 'date': 'date', 'markdown': 'markdown'};
+            const SP_TYPE_MAP: Record<string, CustomFieldType> = {'0': 'text', '1': 'color', '2': 'date', '3': 'month', '4': 'year', '5': 'monthYear', '6': 'timestamp', '7': 'monthDay', 'text': 'text', 'number': 'number', 'checkbox': 'toggle', 'toggle': 'toggle', 'date': 'date', 'markdown': 'markdown'};
             const normId = (raw: any): string => {
               if (raw == null) return '';
               if (typeof raw === 'string') return raw;
@@ -697,7 +1677,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             const groupIdMap: Record<string, string> = {};
             const groupMemberMap: Record<string, string[]> = {};
             extPreview.groups.forEach((g: any) => {
-              const gName = isPK ? (g.display_name || g.name || 'Group') : (g.content?.name || g.name || 'Group');
+              const gName = isPK ? (g.name || g.display_name || 'Group') : (g.content?.name || g.name || 'Group');
               const gColor = isPK ? (g.color ? `#${g.color}` : undefined) : (g.content?.color || undefined);
               const externalId = isPK ? (g.uuid || g.id) : (g.id || g._id);
               const externalMembers: string[] = isPK
@@ -735,7 +1715,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (extSel.frontHistory && extPreview.switches.length > 0) {
             const newH = isPK ? convertPKSwitches(extPreview.switches, idMap) : convertSPSwitches(extPreview.switches, idMap);
             if (newH.length > 0) {
-              const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+              const mergedHistory = mergeHistoryEntries(newH, history);
               await store.set(KEYS.history, mergedHistory);
               const importedOpenFront = findOpenFrontInHistory(mergedHistory);
               if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -752,7 +1732,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               if (isPK && m.id && m.id !== eid) existingIdMap[m.id] = bySource.id;
               return;
             }
-            const name = isPK ? (m.display_name || m.name || '') : (m.content?.name || m.name || '');
+            const name = isPK ? (m.name || m.display_name || '') : (m.content?.name || m.name || '');
             const lm = members.find(l => l.name.toLowerCase() === String(name).toLowerCase());
             if (lm) {
               existingIdMap[eid] = lm.id;
@@ -761,13 +1741,19 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           });
           const newH = isPK ? convertPKSwitches(extPreview.switches, existingIdMap) : convertSPSwitches(extPreview.switches, existingIdMap);
           if (newH.length > 0) {
-            const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+            const mergedHistory = mergeHistoryEntries(newH, history);
             await store.set(KEYS.history, mergedHistory);
             const importedOpenFront = findOpenFrontInHistory(mergedHistory);
             if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
           }
         }
+        setRestoreProgress('');
         setExtPreview(null); setExtToken(''); setTimeout(() => onDataImported(), 500);
+        } catch (e: any) {
+          setRestoreProgress('');
+          console.error('[EXT-IMPORT] failed:', e);
+          Alert.alert(t('share.importFailed'), t('share.importPartialError', {error: e?.message || String(e)}));
+        }
       }},
     ]);
   };
@@ -852,27 +1838,22 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             });
             if (spId) idMap[spId] = newId;
           });
-          await store.set(KEYS.members, merged);
-          const avatarUrls: Record<string, string> = {};
+          await store.set(KEYS.members, finalizeMemberReplace(merged, idMap));
+          const avatarUrls: Record<string, string[]> = {};
           if (extSel.avatars) {
+            const spFallbackUid = String(spMembers.find((x: any) => x.uid)?.uid || '');
             spMembers.forEach((m: any) => {
               const localId = m._id ? idMap[m._id] : undefined;
               if (!localId) return;
-              let avatarUrl = m.avatarUrl || '';
-              if (!avatarUrl && m.avatarUuid) {
-                const ownerUid = m.uid;
-                avatarUrl = ownerUid
-                  ? `https://spaces.apparyllis.com/avatars/${ownerUid}/${m.avatarUuid}`
-                  : `https://spaces.apparyllis.com/avatars/${m.avatarUuid}`;
-              }
-              if (avatarUrl) avatarUrls[localId] = avatarUrl;
+              const cands = spAvatarCandidates(m, spFallbackUid);
+              if (cands.length) avatarUrls[localId] = cands;
             });
           }
           const avatarEntries = Object.entries(avatarUrls);
           if (avatarEntries.length > 0) {
             const withAvatars = [...merged];
-            for (const [memberId, url] of avatarEntries) {
-              const avatar = await saveAvatarFromUrl(memberId, url);
+            for (const [memberId, urls] of avatarEntries) {
+              const avatar = await downloadFirstAvatar(memberId, urls as string[]);
               if (avatar) {
                 const idx = withAvatars.findIndex(m => m.id === memberId);
                 if (idx >= 0) withAvatars[idx] = {...withAvatars[idx], avatar};
@@ -881,7 +1862,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             await store.set(KEYS.members, withAvatars);
           }
           if (extSel.customFields && extPreview.customFields && extPreview.customFields.length > 0) {
-            const SP_TYPE_MAP: Record<string, CustomFieldType> = {'0': 'text', '1': 'number', '2': 'toggle', '3': 'date', '4': 'monthYear', '5': 'month', '6': 'year', 'text': 'text', 'number': 'number', 'checkbox': 'toggle', 'toggle': 'toggle', 'date': 'date', 'markdown': 'markdown'};
+            const SP_TYPE_MAP: Record<string, CustomFieldType> = {'0': 'text', '1': 'color', '2': 'date', '3': 'month', '4': 'year', '5': 'monthYear', '6': 'timestamp', '7': 'monthDay', 'text': 'text', 'number': 'number', 'checkbox': 'toggle', 'toggle': 'toggle', 'date': 'date', 'markdown': 'markdown'};
             const normId = (raw: any): string => {
               if (raw == null) return '';
               if (typeof raw === 'string') return raw;
@@ -943,7 +1924,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           if (extSel.frontHistory && spHistory.length > 0) {
             const newH = convertSPSwitches(spHistory.map((sh: any) => ({content: sh, ...sh})), idMap);
             if (newH.length > 0) {
-              const mergedHistory = [...newH, ...history].sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
+              const mergedHistory = mergeHistoryEntries(newH, history);
               await store.set(KEYS.history, mergedHistory);
               const importedOpenFront = findOpenFrontInHistory(mergedHistory);
               if (importedOpenFront) await store.set(KEYS.front, importedOpenFront);
@@ -1001,7 +1982,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
       entries.forEach(e => { sel[e.key] = true; });
       setRecoverSel(sel);
     } catch (e) {
-      Alert.alert(t('share.recoverScanFailed', {defaultValue: 'Recovery scan failed'}), String(e));
+      Alert.alert(t('share.recoverScanFailed'), String(e));
       setRecoverEntries([]);
     } finally {
       setRecoverScanning(false);
@@ -1013,11 +1994,11 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
     const toRestore = recoverEntries.filter(e => recoverSel[e.key]);
     if (toRestore.length === 0) return;
     Alert.alert(
-      t('share.recoverConfirmTitle', {defaultValue: 'Recover data?'}),
-      t('share.recoverConfirmMsg', {count: toRestore.length, defaultValue: `Restore ${toRestore.length} backup item${toRestore.length === 1 ? '' : 's'} into the app? This will overwrite current data for those categories.`}),
+      t('share.recoverConfirmTitle'),
+      t('share.recoverConfirmMsg', {count: toRestore.length}),
       [
         {text: t('common.cancel'), style: 'cancel'},
-        {text: t('share.recoverConfirm', {defaultValue: 'Recover'}), style: 'destructive', onPress: async () => {
+        {text: t('share.recoverConfirm'), style: 'destructive', onPress: async () => {
           let okCount = 0;
           for (const entry of toRestore) {
             const ok = await restoreFromBackup(entry.key);
@@ -1032,10 +2013,10 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
 
   const friendlyKeyName = (key: string): string => {
     switch (key) {
-      case KEYS.system: return t('share.systemNameDesc');
-      case KEYS.members: return t('share.memberProfiles');
-      case KEYS.front: return t('hub.front', {defaultValue: 'Front'});
-      case KEYS.history: return t('share.frontHistory');
+      case KEYS.system: return catSystemLabel;
+      case KEYS.members: return catMembersLabel;
+      case KEYS.front: return singlet ? t('tabs.status') : t('hub.front');
+      case KEYS.history: return catFrontLabel;
       case KEYS.journal: return t('share.journalEntries');
       case KEYS.groups: return t('share.memberGroups');
       case KEYS.chatChannels: return t('share.chatData');
@@ -1057,6 +2038,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
 
   const SectionBtn = ({id, label}: {id: Section; label: string}) => (
     <TouchableOpacity onPress={() => setSection(id)} activeOpacity={0.7}
+      accessibilityRole="tab" accessibilityState={{selected: section === id}} accessibilityLabel={label}
       style={{flex: 1, paddingVertical: 8, borderRadius: 7, borderWidth: 1, alignItems: 'center',
         backgroundColor: section === id ? T.accentBg : 'transparent', borderColor: section === id ? `${T.accent}40` : T.border}}>
       <Text style={{fontSize: fs(12), color: section === id ? T.accent : T.dim, fontWeight: section === id ? '600' : '400'}}>{label}</Text>
@@ -1065,6 +2047,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
 
   const SourceBtn = ({id, label}: {id: ImportSource; label: string}) => (
     <TouchableOpacity onPress={() => {setImportSource(id); setExtPreview(null); setExtToken('');}} activeOpacity={0.7}
+      accessibilityRole="tab" accessibilityState={{selected: importSource === id}} accessibilityLabel={label}
       style={{paddingVertical: 7, paddingHorizontal: 12, borderRadius: 7, borderWidth: 1,
         backgroundColor: importSource === id ? T.accentBg : 'transparent', borderColor: importSource === id ? `${T.accent}40` : T.border}}>
       <Text style={{fontSize: fs(12), color: importSource === id ? T.accent : T.dim, fontWeight: importSource === id ? '600' : '400'}}>{label}</Text>
@@ -1079,8 +2062,8 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
     </View>
   );
 
-  const Toggle = ({value, onToggle}: {value: boolean; onToggle: () => void}) => (
-    <TouchableOpacity onPress={onToggle} activeOpacity={0.8} style={{width: 40, height: 22, borderRadius: 11, backgroundColor: value ? T.accent : T.toggleOff, justifyContent: 'center'}}>
+  const Toggle = ({value, onToggle, label}: {value: boolean; onToggle: () => void; label?: string}) => (
+    <TouchableOpacity onPress={onToggle} activeOpacity={0.8} accessibilityRole="switch" accessibilityState={{checked: value}} accessibilityLabel={label} style={{width: 40, height: 22, borderRadius: 11, backgroundColor: value ? T.accent : T.toggleOff, justifyContent: 'center'}}>
       <View style={{width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff', position: 'absolute', left: value ? 20 : 3}} />
     </TouchableOpacity>
   );
@@ -1088,7 +2071,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   const SectionRow = ({label, sublabel, value, onToggle, disabled = false}: any) => (
     <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: T.border, paddingHorizontal: 14, opacity: disabled ? 0.4 : 1}}>
       <View style={{flex: 1}}><Text style={{fontSize: fs(14), color: T.text, fontWeight: '500'}}>{label}</Text>{sublabel && <Text style={{fontSize: fs(11), color: T.muted, marginTop: 2}}>{sublabel}</Text>}</View>
-      <Toggle value={value && !disabled} onToggle={disabled ? () => {} : onToggle} />
+      <Toggle value={value && !disabled} onToggle={disabled ? () => {} : onToggle} label={label} />
     </View>
   );
 
@@ -1121,14 +2104,14 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           <Divider label={t('share.fullSystemExport')} />
           <Text style={[s.para, {color: T.dim}]}>{t('share.downloadsDirectly')}</Text>
 
-          <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8, marginTop: 4}}>{t('share.exportCategories', {defaultValue: 'Export Categories'})}</Text>
+          <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8, marginTop: 4}}>{t('share.exportCategories')}</Text>
           <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, overflow: 'hidden', marginBottom: 14}}>
             {([
-              ['system', t('share.systemNameDesc')],
-              ['members', t('share.memberProfiles')],
+              ['system', catSystemLabel],
+              ['members', catMembersLabel],
               ['avatars', t('share.profilePictures')],
-              ['banners', t('share.banners', {defaultValue: 'Banners'})],
-              ['frontHistory', t('share.frontHistory')],
+              ['banners', t('share.banners')],
+              ['frontHistory', catFrontLabel],
               ['journal', t('share.journalEntries')],
               ['groups', t('share.memberGroups')],
               ['chat', t('share.chatData')],
@@ -1138,14 +2121,17 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               ['customFields', t('customFields.title')],
               ['noteboards', t('noteboard.title')],
               ['polls', t('polls.title')],
+              ['journalTemplates', t('journal.templatesTab')],
+              ['relationships', t('systemMap.title')],
+              ['medical', t('medical.title')],
             ] as [keyof ExportCategories, string][]).map(([k, label]) => (
               <SectionRow key={k} label={label} value={!!exportSel[k]} onToggle={() => togExp(k)} />
             ))}
           </View>
 
           <View style={{flexDirection: 'row', gap: 8, marginBottom: 6}}>
-            {[['↓ JSON', handleJSON, T.accentBg, T.accent, `${T.accent}40`], ['↓ HTML', handleHTML, T.infoBg, T.info, `${T.info}40`]].map(([label, fn, bg, color, border]: any) => (
-              <TouchableOpacity key={label} onPress={fn} activeOpacity={0.7} style={{flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 8, borderWidth: 1, backgroundColor: bg, borderColor: border}}>
+            {[['↓ ZIP', handleJSON, T.accentBg, T.accent, `${T.accent}40`], ['↓ HTML', handleHTML, T.infoBg, T.info, `${T.info}40`]].map(([label, fn, bg, color, border]: any) => (
+              <TouchableOpacity key={label} onPress={fn} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={label} style={{flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 8, borderWidth: 1, backgroundColor: bg, borderColor: border}}>
                 <Text style={{fontSize: fs(14), fontWeight: '500', color}}>{label}</Text>
               </TouchableOpacity>
             ))}
@@ -1155,7 +2141,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           <Text style={[s.para, {color: T.dim}]}>{t('share.exportJournalOnly')}</Text>
           <View style={{flexDirection: 'row', gap: 8, marginBottom: 6}}>
             {[['↓ .txt', 'txt', T.accentBg, T.accent, `${T.accent}40`], ['↓ .md', 'md', T.infoBg, T.info, `${T.info}40`], ['↓ .json', 'json', 'transparent', T.dim, T.border]].map(([label, fmt, bg, color, border]: any) => (
-              <TouchableOpacity key={fmt} onPress={() => handleJournalExport(fmt)} activeOpacity={0.7} style={{flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 8, borderWidth: 1, backgroundColor: bg, borderColor: border}}>
+              <TouchableOpacity key={fmt} onPress={() => handleJournalExport(fmt)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={label} style={{flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 8, borderWidth: 1, backgroundColor: bg, borderColor: border}}>
                 <Text style={{fontSize: fs(13), fontWeight: '500', color}}>{label}</Text>
               </TouchableOpacity>
             ))}
@@ -1164,7 +2150,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
           <Divider label={t('share.sendEmail')} />
           <TextInput value={emailAddr} onChangeText={setEmailAddr} placeholder="recipient@email.com" placeholderTextColor={T.muted} keyboardType="email-address" autoCapitalize="none"
             style={{backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: fs(14), marginBottom: 10}} />
-          <TouchableOpacity onPress={handleEmail} activeOpacity={0.7} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}>
+          <TouchableOpacity onPress={handleEmail} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.openInMail')} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`}}>
             <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.openInMail')}</Text>
           </TouchableOpacity>
         </View>
@@ -1185,12 +2171,14 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             <SourceBtn id="simplyplural" label={t('share.simplyPlural')} />
             <SourceBtn id="pluralkit" label={t('share.pluralKit')} />
             <SourceBtn id="spfile" label={t('share.spFile')} />
+            <SourceBtn id="ampersand" label={t('share.ampersand')} />
+            <SourceBtn id="pluralspace" label={t('share.pluralSpace')} />
           </View>
           {importSource === 'journal' && (
             <View>
               <Divider label={t('share.importJournalEntry')} />
               <Text style={[s.para, {color: T.dim}]}>{t('share.importJournalDesc')}</Text>
-              <TouchableOpacity onPress={handleImportJournalFile} activeOpacity={0.7} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
+              <TouchableOpacity onPress={handleImportJournalFile} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.pickFile')} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
                 <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.pickFile')}</Text>
               </TouchableOpacity>
               {importStatus === 'success' && <View style={{backgroundColor: T.successBg, borderWidth: 1, borderColor: `${T.success}30`, borderRadius: 8, padding: 12, marginBottom: 12}}><Text style={{fontSize: fs(13), color: T.success}}>✓ {importMsg}</Text></View>}
@@ -1201,8 +2189,9 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             <View>
               <Divider label={t('share.restoreBackup')} />
               <Text style={[s.para, {color: T.dim}]}>{t('share.restoreBackupDesc')}</Text>
-              <TouchableOpacity onPress={handlePickBackup} activeOpacity={0.7} style={{borderWidth: 1.5, borderStyle: 'dashed', borderColor: restoreFile ? T.success : T.border, borderRadius: 10, padding: 22, alignItems: 'center', marginBottom: 14, gap: 6, backgroundColor: restoreFile ? T.successBg : 'transparent'}}>
-                <Text style={{fontSize: fs(20), color: T.dim}}>↑</Text>
+              <Text style={[s.para, {color: T.muted, fontSize: fs(11)}]}>{t('share.importFormatsNote')}</Text>
+              <TouchableOpacity onPress={handlePickBackup} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={restoreFile || t('share.tapToSelect')} style={{borderWidth: 1.5, borderStyle: 'dashed', borderColor: restoreFile ? T.success : T.border, borderRadius: 10, padding: 22, alignItems: 'center', marginBottom: 14, gap: 6, backgroundColor: restoreFile ? T.successBg : 'transparent'}}>
+                <Text style={{fontSize: fs(20), color: T.dim}} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">↑</Text>
                 <Text style={{fontSize: fs(13), color: restoreFile ? T.success : T.dim, textAlign: 'center'}}>{restoreFile || t('share.tapToSelect')}</Text>
               </TouchableOpacity>
               {restoreError ? <View style={{backgroundColor: T.dangerBg, borderWidth: 1, borderColor: `${T.danger}30`, borderRadius: 7, padding: 10, marginBottom: 12}}><Text style={{fontSize: fs(13), color: T.danger}}>⚠ {restoreError}</Text></View> : null}
@@ -1211,11 +2200,11 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                   <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8}}>{t('share.restoreCategories')}</Text>
                   <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, overflow: 'hidden', marginBottom: 14}}>
                     {([
-                      ['system', t('share.systemNameDesc')],
-                      ['members', t('share.memberProfiles')],
+                      ['system', catSystemLabel],
+                      ['members', catMembersLabel],
                       ['avatars', t('share.profilePictures')],
-                      ['banners', t('share.banners', {defaultValue: 'Banners'})],
-                      ['frontHistory', t('share.frontHistory')],
+                      ['banners', t('share.banners')],
+                      ['frontHistory', catFrontLabel],
                       ['journal', t('share.journalEntries')],
                       ['groups', t('share.memberGroups')],
                       ['chat', t('share.chatData')],
@@ -1225,26 +2214,29 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                       ['customFields', t('customFields.title')],
                       ['noteboards', t('noteboard.title')],
                       ['polls', t('polls.title')],
+                      ['journalTemplates', t('journal.templatesTab')],
+                      ['relationships', t('systemMap.title')],
+                      ['medical', t('medical.title')],
                     ] as any[]).map(([k, label]) => (
                       <SectionRow key={k} label={label} value={restoreSel[k as keyof typeof restoreSel]} onToggle={() => togR(k)} />
                     ))}
                   </View>
                   {restoreDone ? <View style={{backgroundColor: T.successBg, borderWidth: 1, borderColor: `${T.success}30`, borderRadius: 8, padding: 12, alignItems: 'center'}}><Text style={{fontSize: fs(13), color: T.success, fontWeight: '500'}}>{t('share.restoreComplete')}</Text></View>
-                    : restoring ? <View style={{alignItems: 'center', paddingVertical: 16}}><ActivityIndicator color={T.accent} /><Text style={{fontSize: fs(12), color: T.dim, marginTop: 8}}>{t('share.importing')}</Text></View>
-                    : <TouchableOpacity onPress={handleRestore} activeOpacity={0.7} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.dangerBg, borderColor: `${T.danger}40`}}><Text style={{fontSize: fs(14), fontWeight: '500', color: T.danger}}>{t('share.restoreSelectedData')}</Text></TouchableOpacity>}
+                    : restoring ? <View style={{alignItems: 'center', paddingVertical: 16}}><ActivityIndicator color={T.accent} /><Text style={{fontSize: fs(12), color: T.dim, marginTop: 8}} numberOfLines={2}>{restoreProgress || t('share.importing')}</Text></View>
+                    : <TouchableOpacity onPress={handleRestore} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.restoreSelectedData')} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.dangerBg, borderColor: `${T.danger}40`}}><Text style={{fontSize: fs(14), fontWeight: '500', color: T.danger}}>{t('share.restoreSelectedData')}</Text></TouchableOpacity>}
                 </>
               )}
-              <Divider label={t('share.recoverData', {defaultValue: 'Recover Data'})} />
-              <Text style={[s.para, {color: T.dim}]}>{t('share.recoverDataDesc', {defaultValue: "If your data disappeared after a restart (welcome screen returns, members or groups gone, etc.), Plural Star may still have on-disk backups separate from the app's main storage. Scan to see what can be recovered."})}</Text>
+              <Divider label={t('share.recoverData')} />
+              <Text style={[s.para, {color: T.dim}]}>{t('share.recoverDataDesc')}</Text>
               {!recoverEntries ? (
-                <TouchableOpacity onPress={handleScanRecovery} disabled={recoverScanning} activeOpacity={0.7} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.surface, borderColor: T.border, marginBottom: 14, opacity: recoverScanning ? 0.5 : 1}}>
-                  {recoverScanning ? <ActivityIndicator color={T.accent} size="small" /> : <Text style={{fontSize: fs(14), fontWeight: '500', color: T.text}}>{t('share.scanForBackups', {defaultValue: 'Scan for recoverable backups'})}</Text>}
+                <TouchableOpacity onPress={handleScanRecovery} disabled={recoverScanning} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.scanForBackups')} accessibilityState={{disabled: recoverScanning}} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.surface, borderColor: T.border, marginBottom: 14, opacity: recoverScanning ? 0.5 : 1}}>
+                  {recoverScanning ? <ActivityIndicator color={T.accent} size="small" /> : <Text style={{fontSize: fs(14), fontWeight: '500', color: T.text}}>{t('share.scanForBackups')}</Text>}
                 </TouchableOpacity>
               ) : recoverEntries.length === 0 ? (
                 <View style={{padding: 14, borderRadius: 8, borderWidth: 1, borderColor: T.border, backgroundColor: T.surface, marginBottom: 14}}>
-                  <Text style={{fontSize: fs(13), color: T.dim, textAlign: 'center'}}>{t('share.noBackupsFound', {defaultValue: 'No recoverable backups found on disk.'})}</Text>
-                  <TouchableOpacity onPress={() => {setRecoverEntries(null); setRecoverDone(false);}} activeOpacity={0.7} style={{alignSelf: 'center', marginTop: 8}}>
-                    <Text style={{fontSize: fs(12), color: T.accent}}>{t('share.scanAgain', {defaultValue: 'Scan again'})}</Text>
+                  <Text style={{fontSize: fs(13), color: T.dim, textAlign: 'center'}}>{t('share.noBackupsFound')}</Text>
+                  <TouchableOpacity onPress={() => {setRecoverEntries(null); setRecoverDone(false);}} activeOpacity={0.7} accessibilityRole="button" style={{alignSelf: 'center', marginTop: 8}}>
+                    <Text style={{fontSize: fs(12), color: T.accent}}>{t('share.scanAgain')}</Text>
                   </TouchableOpacity>
                 </View>
               ) : (
@@ -1256,6 +2248,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                       const checked = !!recoverSel[entry.key];
                       return (
                         <TouchableOpacity key={entry.key} onPress={() => setRecoverSel(s => ({...s, [entry.key]: !s[entry.key]}))} activeOpacity={0.7}
+                          accessibilityRole="checkbox" accessibilityState={{checked}} accessibilityLabel={friendlyKeyName(entry.key)}
                           style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: T.border, gap: 12}}>
                           <View style={{width: 18, height: 18, borderRadius: 4, borderWidth: 1.5, borderColor: checked ? T.accent : T.border, backgroundColor: checked ? T.accent : 'transparent', alignItems: 'center', justifyContent: 'center'}}>
                             {checked ? <Text style={{fontSize: fs(11), color: '#fff', fontWeight: '700'}}>✓</Text> : null}
@@ -1270,15 +2263,15 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                   </View>
                   {recoverDone ? (
                     <View style={{backgroundColor: T.successBg, borderWidth: 1, borderColor: `${T.success}30`, borderRadius: 8, padding: 12, alignItems: 'center', marginBottom: 14}}>
-                      <Text style={{fontSize: fs(13), color: T.success, fontWeight: '500'}}>{t('share.recoverComplete', {defaultValue: '✓ Recovery complete — reloading…'})}</Text>
+                      <Text style={{fontSize: fs(13), color: T.success, fontWeight: '500'}}>{t('share.recoverComplete')}</Text>
                     </View>
                   ) : (
                     <View style={{flexDirection: 'row', gap: 8, marginBottom: 14}}>
-                      <TouchableOpacity onPress={() => {setRecoverEntries(null); setRecoverSel({}); setRecoverDone(false);}} activeOpacity={0.7} style={{flex: 1, alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.surface, borderColor: T.border}}>
+                      <TouchableOpacity onPress={() => {setRecoverEntries(null); setRecoverSel({}); setRecoverDone(false);}} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('common.cancel')} style={{flex: 1, alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.surface, borderColor: T.border}}>
                         <Text style={{fontSize: fs(13), fontWeight: '500', color: T.dim}}>{t('common.cancel')}</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress={handleApplyRecovery} activeOpacity={0.7} disabled={Object.values(recoverSel).every(v => !v)} style={{flex: 2, alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, opacity: Object.values(recoverSel).every(v => !v) ? 0.4 : 1}}>
-                        <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.recoverSelected', {defaultValue: 'Recover selected'})}</Text>
+                      <TouchableOpacity onPress={handleApplyRecovery} activeOpacity={0.7} disabled={Object.values(recoverSel).every(v => !v)} accessibilityRole="button" accessibilityLabel={t('share.recoverSelected')} style={{flex: 2, alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, opacity: Object.values(recoverSel).every(v => !v) ? 0.4 : 1}}>
+                        <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.recoverSelected')}</Text>
                       </TouchableOpacity>
                     </View>
                   )}
@@ -1286,7 +2279,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               )}
               <Divider label={t('share.deleteAccount')} />
               <Text style={[s.para, {color: T.dim}]}>{t('share.deleteAccountDesc')}</Text>
-              <TouchableOpacity onPress={handleDeleteAccount} activeOpacity={0.7} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.dangerBg, borderColor: `${T.danger}40`}}>
+              <TouchableOpacity onPress={handleDeleteAccount} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.deleteAllData')} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.dangerBg, borderColor: `${T.danger}40`}}>
                 <Text style={{fontSize: fs(14), fontWeight: '500', color: T.danger}}>{t('share.deleteAllData')}</Text>
               </TouchableOpacity>
             </View>
@@ -1298,6 +2291,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
               <TextInput value={extToken} onChangeText={setExtToken} placeholder={importSource === 'simplyplural' ? t('share.spTokenPlaceholder') : t('share.pkTokenPlaceholder')} placeholderTextColor={T.muted} autoCapitalize="none" autoCorrect={false}
                 style={{backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: fs(14), marginBottom: 10, fontFamily: 'monospace'}} />
               <TouchableOpacity onPress={importSource === 'simplyplural' ? handleSimplyPluralFetch : handlePluralKitFetch} disabled={extLoading} activeOpacity={0.7}
+                accessibilityRole="button" accessibilityLabel={t('share.fetchData')} accessibilityState={{disabled: extLoading}}
                 style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10, opacity: extLoading ? 0.5 : 1}}>
                 <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{extLoading ? t('share.fetching') : t('share.fetchData')}</Text>
               </TouchableOpacity>
@@ -1310,18 +2304,21 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                   </View>
                   <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8}}>{t('share.importCategories')}</Text>
                   <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, overflow: 'hidden', marginBottom: 14}}>
-                    <SectionRow label={t('share.systemNameDesc')} value={extSel.system} onToggle={() => togE('system')} />
-                    <SectionRow label={t('share.memberProfiles')} sublabel={t('share.membersCount', {count: extPreview.members.length})} value={extSel.members} onToggle={() => togE('members')} />
+                    <SectionRow label={catSystemLabel} value={extSel.system} onToggle={() => togE('system')} />
+                    <SectionRow label={catMembersLabel} sublabel={t('share.membersCount', {count: extPreview.members.length})} value={extSel.members} onToggle={() => togE('members')} />
                     <SectionRow label={t('share.profilePictures')} value={extSel.avatars} onToggle={() => togE('avatars')} />
                     {importSource === 'pluralkit' && (
-                      <SectionRow label={t('share.banners', {defaultValue: 'Banners'})} value={extSel.banners} onToggle={() => togE('banners')} />
+                      <SectionRow label={t('share.banners')} value={extSel.banners} onToggle={() => togE('banners')} />
                     )}
-                    <SectionRow label={t('share.frontHistory')} sublabel={t('share.frontEntries', {count: extPreview.switches.length})} value={extSel.frontHistory} onToggle={() => togE('frontHistory')} />
-                    {extPreview.groups && extPreview.groups.length > 0 && (
-                      <SectionRow label={t('share.groups', {defaultValue: 'Groups'})} sublabel={t('share.groupsCount', {count: extPreview.groups.length, defaultValue: `${extPreview.groups.length} group${extPreview.groups.length === 1 ? '' : 's'}`})} value={extSel.groups} onToggle={() => togE('groups')} />
+                    <SectionRow label={catFrontLabel} sublabel={t('share.frontEntries', {count: extPreview.switches.length})} value={extSel.frontHistory} onToggle={() => togE('frontHistory')} />
+                    {importSource === 'simplyplural' && (
+                      <SectionRow label={t('customFields.title')} sublabel={t('share.customFieldsCount', {count: (extPreview.customFields || []).length})} value={extSel.customFields} onToggle={() => togE('customFields')} />
+                    )}
+                    {(importSource === 'simplyplural' || (extPreview.groups && extPreview.groups.length > 0)) && (
+                      <SectionRow label={t('share.groups')} sublabel={t('share.groupsCount', {count: (extPreview.groups || []).length})} value={extSel.groups} onToggle={() => togE('groups')} />
                     )}
                   </View>
-                  <TouchableOpacity onPress={handleExtImport} activeOpacity={0.7} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
+                  <TouchableOpacity onPress={handleExtImport} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.importSelected')} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
                     <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.importSelected')}</Text>
                   </TouchableOpacity>
                 </View>
@@ -1332,7 +2329,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
             <View>
               <Divider label={t('share.spFileImport')} />
               <Text style={[s.para, {color: T.dim}]}>{t('share.spFileHint')}</Text>
-              <TouchableOpacity onPress={handleSPFileImport} activeOpacity={0.7}
+              <TouchableOpacity onPress={handleSPFileImport} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.pickSPFile')}
                 style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
                 <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.pickSPFile')}</Text>
               </TouchableOpacity>
@@ -1344,15 +2341,98 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
                   </View>
                   <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8}}>{t('share.importCategories')}</Text>
                   <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, overflow: 'hidden', marginBottom: 14}}>
-                    <SectionRow label={t('share.systemNameDesc')} value={extSel.system} onToggle={() => togE('system')} />
-                    <SectionRow label={t('share.memberProfiles')} sublabel={t('share.membersCount', {count: extPreview.members.length})} value={extSel.members} onToggle={() => togE('members')} />
+                    <SectionRow label={catSystemLabel} value={extSel.system} onToggle={() => togE('system')} />
+                    <SectionRow label={catMembersLabel} sublabel={t('share.membersCount', {count: extPreview.members.length})} value={extSel.members} onToggle={() => togE('members')} />
                     <SectionRow label={t('share.profilePictures')} value={extSel.avatars} onToggle={() => togE('avatars')} />
-                    <SectionRow label={t('share.frontHistory')} sublabel={t('share.frontEntries', {count: extPreview.switches.length})} value={extSel.frontHistory} onToggle={() => togE('frontHistory')} />
+                    <SectionRow label={catFrontLabel} sublabel={t('share.frontEntries', {count: extPreview.switches.length})} value={extSel.frontHistory} onToggle={() => togE('frontHistory')} />
                     {extPreview.groups && extPreview.groups.length > 0 && (
-                      <SectionRow label={t('share.groups', {defaultValue: 'Groups'})} sublabel={t('share.groupsCount', {count: extPreview.groups.length, defaultValue: `${extPreview.groups.length} group${extPreview.groups.length === 1 ? '' : 's'}`})} value={extSel.groups} onToggle={() => togE('groups')} />
+                      <SectionRow label={t('share.groups')} sublabel={t('share.groupsCount', {count: extPreview.groups.length})} value={extSel.groups} onToggle={() => togE('groups')} />
                     )}
                   </View>
-                  <TouchableOpacity onPress={handleSPFileConfirmImport} activeOpacity={0.7} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
+                  <TouchableOpacity onPress={handleSPFileConfirmImport} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.importSelected')} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
+                    <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.importSelected')}</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          )}
+          {importSource === 'ampersand' && (
+            <View>
+              <Divider label={t('share.ampersandImport')} />
+              <Text style={[s.para, {color: T.dim}]}>{t('share.ampersandHint')}</Text>
+              <TouchableOpacity onPress={handleAmpersandPick} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.pickAmparFile')}
+                style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
+                <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.pickAmparFile')}</Text>
+              </TouchableOpacity>
+              {importStatus === 'success' && <View style={{backgroundColor: T.successBg, borderWidth: 1, borderColor: `${T.success}30`, borderRadius: 8, padding: 12, marginBottom: 12}}><Text style={{fontSize: fs(13), color: T.success}}>✓ {importMsg}</Text></View>}
+              {importStatus === 'error' && <View style={{backgroundColor: T.dangerBg, borderWidth: 1, borderColor: `${T.danger}30`, borderRadius: 7, padding: 10, marginBottom: 12}}><Text style={{fontSize: fs(13), color: T.danger}}>⚠ {importMsg}</Text></View>}
+              {extPreview && (
+                <View>
+                  <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, padding: 14, marginBottom: 14}}>
+                    <Text style={{fontSize: fs(16), fontWeight: '600', color: T.accent}}>{extPreview.system?.name || t('share.system')}</Text>
+                    <Text style={{fontSize: fs(12), color: T.dim, marginTop: 2}}>{t('share.membersCount', {count: extPreview.members.length})} · {t('share.frontEntries', {count: extPreview.switches.length})}</Text>
+                  </View>
+                  <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8}}>{t('share.importCategories')}</Text>
+                  <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, overflow: 'hidden', marginBottom: 14}}>
+                    <SectionRow label={catSystemLabel} value={extSel.system} onToggle={() => togE('system')} />
+                    <SectionRow label={catMembersLabel} sublabel={t('share.membersCount', {count: extPreview.members.length})} value={extSel.members} onToggle={() => togE('members')} />
+                    <SectionRow label={t('customFields.title')} value={extSel.customFields} onToggle={() => togE('customFields')} />
+                    <SectionRow label={catFrontLabel} sublabel={t('share.frontEntries', {count: extPreview.switches.length})} value={extSel.frontHistory} onToggle={() => togE('frontHistory')} />
+                  </View>
+                  <TouchableOpacity onPress={handleAmpersandConfirm} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.importSelected')} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
+                    <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.importSelected')}</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          )}
+          {importSource === 'pluralspace' && (
+            <View>
+              <Divider label={t('share.psImport')} />
+              <Text style={[s.para, {color: T.dim}]}>{t('share.psHint')}</Text>
+              <TouchableOpacity onPress={handlePluralSpacePick} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.pickPsFile')}
+                style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
+                <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.pickPsFile')}</Text>
+              </TouchableOpacity>
+              {importStatus === 'success' && <View style={{backgroundColor: T.successBg, borderWidth: 1, borderColor: `${T.success}30`, borderRadius: 8, padding: 12, marginBottom: 12}}><Text style={{fontSize: fs(13), color: T.success}}>✓ {importMsg}</Text></View>}
+              {importStatus === 'error' && <View style={{backgroundColor: T.dangerBg, borderWidth: 1, borderColor: `${T.danger}30`, borderRadius: 7, padding: 10, marginBottom: 12}}><Text style={{fontSize: fs(13), color: T.danger}}>⚠ {importMsg}</Text></View>}
+              {restoreProgress ? <View style={{alignItems: 'center', paddingVertical: 12}}><ActivityIndicator color={T.accent} /><Text style={{fontSize: fs(12), color: T.dim, marginTop: 8}} numberOfLines={2}>{restoreProgress}</Text></View> : null}
+              {psAvatarIndex && !extPreview && (
+                <View style={{marginBottom: 10}}>
+                  <Text style={[s.para, {color: T.dim}]}>{t('share.psAvatarsHint')}</Text>
+                  <TouchableOpacity onPress={handlePluralSpaceAvatarsPick} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.psPickAvatars')}
+                    style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.infoBg, borderColor: `${T.info}40`}}>
+                    <Text style={{fontSize: fs(14), fontWeight: '500', color: T.info}}>{t('share.psPickAvatars')}</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {extPreview && (
+                <View>
+                  <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, padding: 14, marginBottom: 14}}>
+                    <Text style={{fontSize: fs(16), fontWeight: '600', color: T.accent}}>{extPreview.system?.name || t('share.system')}</Text>
+                    <Text style={{fontSize: fs(12), color: T.dim, marginTop: 2}}>{t('share.membersCount', {count: extPreview.members.length})} · {t('share.frontEntries', {count: extPreview.switches.length})}</Text>
+                  </View>
+                  <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 8}}>{t('share.importCategories')}</Text>
+                  <View style={{backgroundColor: T.card, borderRadius: 10, borderWidth: 1, borderColor: T.border, overflow: 'hidden', marginBottom: 14}}>
+                    <SectionRow label={catSystemLabel} value={extSel.system} onToggle={() => togE('system')} />
+                    <SectionRow label={catMembersLabel} sublabel={t('share.membersCount', {count: extPreview.members.length})} value={extSel.members} onToggle={() => togE('members')} />
+                    <SectionRow label={t('share.profilePictures')} value={extSel.avatars} onToggle={() => togE('avatars')} />
+                    <SectionRow label={t('customFields.title')} value={extSel.customFields} onToggle={() => togE('customFields')} />
+                    <SectionRow label={catFrontLabel} sublabel={t('share.frontEntries', {count: extPreview.switches.length})} value={extSel.frontHistory} onToggle={() => togE('frontHistory')} />
+                    {(extPreview.groups || []).length > 0 && (
+                      <SectionRow label={t('share.groups')} sublabel={t('share.groupsCount', {count: (extPreview.groups || []).length})} value={extSel.groups} onToggle={() => togE('groups')} />
+                    )}
+                    {(extPreview.journal || []).length > 0 && (
+                      <SectionRow label={t('share.journalEntries')} value={extSel.journal} onToggle={() => togE('journal')} />
+                    )}
+                    {(extPreview.chat || []).length > 0 && (
+                      <SectionRow label={t('share.chatData')} value={extSel.chat} onToggle={() => togE('chat')} />
+                    )}
+                    {(extPreview.polls || []).length > 0 && (
+                      <SectionRow label={t('polls.title')} value={extSel.polls} onToggle={() => togE('polls')} />
+                    )}
+                  </View>
+                  <TouchableOpacity onPress={handlePluralSpaceConfirm} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('share.importSelected')} style={{alignItems: 'center', paddingVertical: 11, borderRadius: 8, borderWidth: 1, backgroundColor: T.accentBg, borderColor: `${T.accent}40`, marginBottom: 10}}>
                     <Text style={{fontSize: fs(14), fontWeight: '500', color: T.accent}}>{t('share.importSelected')}</Text>
                   </TouchableOpacity>
                 </View>
@@ -1368,22 +2448,24 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
         <View>
           <Text style={[s.para, {color: T.dim, marginTop: 8}]}>{t('share.controlVisibility')}</Text>
           <View style={{backgroundColor: T.card, borderRadius: 12, borderWidth: 1, borderColor: T.border, overflow: 'hidden', marginBottom: 4}}>
-            <SectionRow label={t('share.showCurrentFront')} value={shareSettings.showFront} onToggle={() => tog('showFront')} />
-            <SectionRow label={t('share.showMemberList')} value={shareSettings.showMembers} onToggle={() => tog('showMembers')} />
+            <SectionRow label={singlet ? t('share.showCurrentStatus') : t('share.showCurrentFront')} value={shareSettings.showFront} onToggle={() => tog('showFront')} />
+            {!singlet && <SectionRow label={t('share.showMemberList')} value={shareSettings.showMembers} onToggle={() => tog('showMembers')} />}
             <SectionRow label={t('share.showMemberDescriptions')} value={shareSettings.showDescriptions} onToggle={() => tog('showDescriptions')} />
           </View>
           <Divider label={t('share.preview')} />
           <View style={{backgroundColor: T.surface, borderRadius: 12, borderWidth: 1, borderColor: T.border, padding: 16}}>
-            <Text style={{fontFamily: 'Georgia', fontSize: fs(20), color: T.accent, marginBottom: 4, fontStyle: 'italic'}}>{system.name}</Text>
+            <Text style={{fontFamily: 'OpenDyslexic', fontSize: fs(20), color: T.accent, marginBottom: 4, fontStyle: 'italic'}}>{system.name}</Text>
             {system.description ? <Text style={{fontSize: fs(12), color: T.dim, lineHeight: 18, marginBottom: 12}}>{system.description}</Text> : null}
             {shareSettings.showFront && (
               <View>
                 {primaryFronters.length === 0 && coFronters.length === 0 && coConsciousFronters.length === 0
                   ? <Text style={{fontSize: fs(12), color: T.muted, marginTop: 8}}>{t('share.nobodySet')}</Text>
+                  : singlet
+                  ? (<PreviewTier label={t('tabs.status')} fronters={primaryFronters} color={T.accent} />)
                   : (<><PreviewTier label={t('tier.primaryFront')} fronters={primaryFronters} color={T.accent} /><PreviewTier label={t('tier.coFront')} fronters={coFronters} color={T.info} /><PreviewTier label={t('tier.coConscious')} fronters={coConsciousFronters} color={T.success} /></>)}
               </View>
             )}
-            {shareSettings.showMembers && members.length > 0 && (
+            {!singlet && shareSettings.showMembers && members.length > 0 && (
               <View style={{marginTop: 10}}>
                 <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, fontWeight: '600', marginBottom: 6}}>{t('share.membersLabel', {count: members.length})}</Text>
                 {members.slice(0, 4).map(m => (
@@ -1405,7 +2487,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
 
 const s = StyleSheet.create({
   content: {padding: 16, paddingBottom: 40},
-  heading: {fontFamily: 'Georgia', fontSize: 26, fontWeight: '600', fontStyle: 'italic', marginBottom: 16},
+  heading: {fontFamily: 'OpenDyslexic', fontSize: 22, fontWeight: '600', fontStyle: 'italic', marginBottom: 16},
   para: {fontSize: 13, lineHeight: 19, marginBottom: 14},
   hint: {fontSize: 11, marginBottom: 4, lineHeight: 16},
 });

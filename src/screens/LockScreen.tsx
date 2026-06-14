@@ -1,5 +1,6 @@
 import React, {useState} from 'react';
-import {View, Text, Image, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, TouchableOpacity, TextInput} from 'react-native';
+import {View, Image, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, TouchableOpacity} from 'react-native';
+import {Text, TextInput} from '../components/AppText';
 import {useTranslation} from 'react-i18next';
 import {Fonts} from '../theme';
 
@@ -22,22 +23,22 @@ export const LockScreen = ({theme: T, password, systemName, onUnlock}: Props) =>
       setError('');
       onUnlock();
     } else {
-      setError(t('lock.wrongPassword', {defaultValue: 'Incorrect password.'}));
+      setError(t('lock.wrongPassword'));
     }
   };
 
   return (
     <KeyboardAvoidingView style={{flex: 1, backgroundColor: T.bg}} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={s.container} keyboardShouldPersistTaps="handled">
-        <Image source={require('../assets/splash-logo.png')} style={s.logo} resizeMode="contain" />
-        <Text style={[s.heading, {color: T.accent}]}>{systemName || t('lock.locked', {defaultValue: 'Locked'})}</Text>
-        <Text style={[s.sub, {color: T.dim}]}>{t('lock.subtitle', {defaultValue: 'Enter your password to continue.'})}</Text>
+        <Image source={require('../assets/splash-logo.png')} style={s.logo} resizeMode="contain" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
+        <Text accessibilityRole="header" style={[s.heading, {color: T.accent}]}>{systemName || t('lock.locked')}</Text>
+        <Text style={[s.sub, {color: T.dim}]}>{t('lock.subtitle')}</Text>
         <View style={s.form}>
-          <Text style={[s.label, {color: T.dim}]}>{t('lock.password', {defaultValue: 'Password'})}</Text>
+          <Text style={[s.label, {color: T.dim}]}>{t('lock.password')}</Text>
           <TextInput
             value={input}
             onChangeText={v => { setInput(v); if (error) setError(''); }}
-            placeholder={t('lock.passwordPlaceholder', {defaultValue: 'Enter password'})}
+            placeholder={t('lock.passwordPlaceholder')}
             placeholderTextColor={T.muted}
             secureTextEntry
             autoFocus
@@ -46,8 +47,8 @@ export const LockScreen = ({theme: T, password, systemName, onUnlock}: Props) =>
             style={[s.input, {backgroundColor: T.surface, color: T.text, borderColor: error ? T.danger : T.border}]}
           />
           {error ? <Text style={{fontSize: fs(12), color: T.danger, marginBottom: 10, marginTop: -8}}>{error}</Text> : null}
-          <TouchableOpacity onPress={submit} activeOpacity={0.8} style={[s.btn, {backgroundColor: T.accent}]}>
-            <Text style={s.btnText}>{t('lock.unlock', {defaultValue: 'Unlock'})}</Text>
+          <TouchableOpacity onPress={submit} activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={t('lock.unlock')} style={[s.btn, {backgroundColor: T.accent}]}>
+            <Text style={s.btnText}>{t('lock.unlock')}</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -58,7 +59,7 @@ export const LockScreen = ({theme: T, password, systemName, onUnlock}: Props) =>
 const s = StyleSheet.create({
   container: {flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, paddingVertical: 48},
   logo: {width: 180, height: 180, marginBottom: 24},
-  heading: {fontFamily: Fonts.display, fontSize: 30, fontWeight: '600', fontStyle: 'italic', marginBottom: 8, textAlign: 'center'},
+  heading: {fontFamily: Fonts.display, fontSize: 24, fontWeight: '600', fontStyle: 'italic', marginBottom: 8, textAlign: 'center'},
   sub: {fontSize: 14, marginBottom: 40, textAlign: 'center'},
   form: {width: '100%'},
   label: {fontSize: 10, letterSpacing: 1, fontWeight: '600', marginBottom: 5},

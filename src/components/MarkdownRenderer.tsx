@@ -1,5 +1,6 @@
 import React from 'react';
-import {View, Text, Image, Linking} from 'react-native';
+import {View, Image, Linking} from 'react-native';
+import {Text} from './AppText';
 import type {Member} from '../utils';
 
 const IMAGE_URL_RE = /https?:\/\/\S+\.(?:gif|png|pnj|jpe?g|webp|bmp|svg)(?:[?#]\S*)?/gi;
@@ -7,6 +8,13 @@ const MD_IMAGE_RE = /!\[([^\]]*)\]\(([^)]+)\)/;
 const MENTION_RE = /@\[([^\]]+)\]\(member:([a-zA-Z0-9_-]+)\)/g;
 
 const fs = (s: number, T: any): number => Math.round(s * (T?.textScale || 1));
+
+const isValidImageUri = (u: unknown): u is string => {
+  if (typeof u !== 'string') return false;
+  const s = u.trim();
+  if (!s) return false;
+  return /^https?:\/\//i.test(s) || /^file:\/\//i.test(s) || /^content:\/\//i.test(s) || s.startsWith('data:image/');
+};
 
 const renderTextWithMentions = (
   text: string,
@@ -46,7 +54,7 @@ const renderTextWithMentions = (
 
 const isHTML = (text: string): boolean => {
   const t = text.trim();
-  return t.startsWith('<') || /<(?:p|h[1-6]|div|ul|ol|blockquote|pre|hr)\b/i.test(t);
+  return t.startsWith('<') || /<(?:p|h[1-6]|div|ul|ol|blockquote|pre|hr|img|br|strong|em|b|i|s|del|code|a)\b/i.test(t);
 };
 
 const decodeEntities = (s: string) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
@@ -179,8 +187,30 @@ const renderHTMLBlocks = (html: string, T: any, members?: Member[], onMentionPre
           case 'p': default: {
             const content = seg.content.trim();
             if (!content) return <View key={i} style={{height: 4}} />;
-            const hasImage = /<img\s/i.test(content);
-            if (hasImage) {
+            const imgCount = (content.match(/<img\s/gi) || []).length;
+            if (imgCount === 1) {
+              const imgM = content.match(/<img\s[^>]*>/i);
+              if (imgM && imgM.index !== undefined) {
+                const restHtml = (content.slice(0, imgM.index) + ' ' + content.slice(imgM.index + imgM[0].length));
+                const restPlain = restHtml.replace(/<[^>]*>/g, '').trim();
+                const srcMatch = imgM[0].match(/src=["']([^"']+)["']/);
+                const url = srcMatch ? srcMatch[1] : '';
+                const validUrl = /^https?:\/\//i.test(url) || /^file:\/\//i.test(url) || url.startsWith('data:');
+                if (validUrl && restPlain.length > 0) {
+                  const wAttr = imgM[0].match(/width=["']?(\d+)["']?/);
+                  const hAttr = imgM[0].match(/height=["']?(\d+)["']?/);
+                  const sideW = Math.min(wAttr ? Number(wAttr[1]) : 110, 130);
+                  const sideH = (wAttr && hAttr) ? Math.round(sideW * (Number(hAttr[1]) / Number(wAttr[1]))) : Math.round(sideW * 1.4);
+                  return (
+                    <View key={i} style={{flexDirection: 'row', gap: 10, marginVertical: 2, alignItems: 'flex-start'}}>
+                      <Image source={{uri: url}} style={{width: sideW, height: sideH, borderRadius: 8}} resizeMode="contain" />
+                      <Text style={{flex: 1, fontSize: fs(13, T), color: T.dim, lineHeight: 20}}>{renderInlineHTML(restHtml, T, members, onMentionPress)}</Text>
+                    </View>
+                  );
+                }
+              }
+            }
+            if (imgCount >= 1) {
               return <View key={i} style={{marginVertical: 2}}>{renderInlineHTML(content, T, members, onMentionPress)}</View>;
             }
             return <Text key={i} style={{fontSize: fs(13, T), color: T.dim, lineHeight: 20}}>{renderInlineHTML(content, T, members, onMentionPress)}</Text>;
@@ -214,7 +244,11 @@ const renderInline = (text: string, T: any, members?: Member[], onMentionPress?:
     [/\*(.+?)\*/, m => <Text key={key++} style={{fontStyle: 'italic'}}>{m[1]}</Text>],
     [/~~(.+?)~~/, m => <Text key={key++} style={{textDecorationLine: 'line-through'}}>{m[1]}</Text>],
     [/`(.+?)`/, m => <Text key={key++} style={{fontFamily: 'monospace', backgroundColor: T.surface, paddingHorizontal: 4, borderRadius: 3, fontSize: fs(12, T)}}>{m[1]}</Text>],
-    [/!\[([^\]]*)\]\(([^)]+)\)/, m => <Image key={key++} source={{uri: m[2].replace(/[)]+$/, '')}} style={{width: 200, height: 200, borderRadius: 8}} resizeMode="contain" />],
+    [/!\[([^\]]*)\]\(([^)]+)\)/, m => {
+      const url = m[2].replace(/[)]+$/, '').trim();
+      if (!isValidImageUri(url)) return <Text key={key++} style={{fontSize: fs(11, T), color: T.muted, fontStyle: 'italic'}}>[broken image]</Text>;
+      return <Image key={key++} source={{uri: url}} style={{width: 200, height: 200, borderRadius: 8}} resizeMode="contain" />;
+    }],
     [/\[(.+?)\]\((.+?)\)/, m => <Text key={key++} style={{color: T.info, textDecorationLine: 'underline'}} onPress={() => Linking.openURL(m[2])}>{m[1]}</Text>],
   ];
   while (remaining.length > 0) {
@@ -235,15 +269,15 @@ const renderInline = (text: string, T: any, members?: Member[], onMentionPress?:
 };
 
 const renderMarkdownLine = (line: string, T: any, i: number, members?: Member[], onMentionPress?: (id: string) => void): React.ReactNode => {
-  if (line.startsWith('### ')) return <Text key={i} style={{fontSize: fs(14, T), fontWeight: '700', color: T.text, marginBottom: 4}}>{renderInline(line.slice(4), T, members, onMentionPress)}</Text>;
-  if (line.startsWith('## ')) return <Text key={i} style={{fontSize: fs(16, T), fontWeight: '700', color: T.text, marginBottom: 4}}>{renderInline(line.slice(3), T, members, onMentionPress)}</Text>;
-  if (line.startsWith('# ')) return <Text key={i} style={{fontSize: fs(18, T), fontWeight: '700', color: T.text, marginBottom: 4}}>{renderInline(line.slice(2), T, members, onMentionPress)}</Text>;
-  if (line.startsWith('> ')) return <View key={i} style={{borderLeftWidth: 3, borderLeftColor: T.accent, paddingLeft: 10, marginVertical: 2}}><Text style={{fontSize: fs(13, T), color: T.dim, fontStyle: 'italic', lineHeight: 20}}>{renderInline(line.slice(2), T, members, onMentionPress)}</Text></View>;
+  if (line.startsWith('### ')) return <Text key={i} style={{fontSize: fs(14, T), fontWeight: '700', color: T.text, marginBottom: 4}} maxFontSizeMultiplier={1.3}>{renderInline(line.slice(4), T, members, onMentionPress)}</Text>;
+  if (line.startsWith('## ')) return <Text key={i} style={{fontSize: fs(16, T), fontWeight: '700', color: T.text, marginBottom: 4}} maxFontSizeMultiplier={1.3}>{renderInline(line.slice(3), T, members, onMentionPress)}</Text>;
+  if (line.startsWith('# ')) return <Text key={i} style={{fontSize: fs(18, T), fontWeight: '700', color: T.text, marginBottom: 4}} maxFontSizeMultiplier={1.3}>{renderInline(line.slice(2), T, members, onMentionPress)}</Text>;
+  if (line.startsWith('> ')) return <View key={i} style={{borderLeftWidth: 3, borderLeftColor: T.accent, paddingLeft: 10, marginVertical: 2}}><Text style={{fontSize: fs(13, T), color: T.dim, fontStyle: 'italic', lineHeight: 20}} maxFontSizeMultiplier={1.3}>{renderInline(line.slice(2), T, members, onMentionPress)}</Text></View>;
   if (line.startsWith('---') || line.startsWith('***')) return <View key={i} style={{height: 1, backgroundColor: T.border, marginVertical: 8}} />;
-  if (line.match(/^[-*] /)) return <View key={i} style={{flexDirection: 'row', gap: 6, marginVertical: 1}}><Text style={{fontSize: fs(13, T), color: T.dim}}>•</Text><Text style={{fontSize: fs(13, T), color: T.dim, flex: 1, lineHeight: 20}}>{renderInline(line.slice(2), T, members, onMentionPress)}</Text></View>;
-  if (line.match(/^\d+\. /)) {const m = line.match(/^(\d+)\. (.*)$/); return <View key={i} style={{flexDirection: 'row', gap: 6, marginVertical: 1}}><Text style={{fontSize: fs(13, T), color: T.dim, width: 16, textAlign: 'right'}}>{m?.[1]}.</Text><Text style={{fontSize: fs(13, T), color: T.dim, flex: 1, lineHeight: 20}}>{renderInline(m?.[2] || '', T, members, onMentionPress)}</Text></View>;}
+  if (line.match(/^[-*] /)) return <View key={i} style={{flexDirection: 'row', gap: 6, marginVertical: 1}}><Text style={{fontSize: fs(13, T), color: T.dim}} maxFontSizeMultiplier={1.3}>•</Text><Text style={{fontSize: fs(13, T), color: T.dim, flex: 1, lineHeight: 20}} maxFontSizeMultiplier={1.3}>{renderInline(line.slice(2), T, members, onMentionPress)}</Text></View>;
+  if (line.match(/^\d+\. /)) {const m = line.match(/^(\d+)\. (.*)$/); return <View key={i} style={{flexDirection: 'row', gap: 6, marginVertical: 1}}><Text style={{fontSize: fs(13, T), color: T.dim, width: 16, textAlign: 'right'}} maxFontSizeMultiplier={1.3}>{m?.[1]}.</Text><Text style={{fontSize: fs(13, T), color: T.dim, flex: 1, lineHeight: 20}} maxFontSizeMultiplier={1.3}>{renderInline(m?.[2] || '', T, members, onMentionPress)}</Text></View>;}
   if (!line.trim()) return <View key={i} style={{height: 8}} />;
-  return <Text key={i} style={{fontSize: fs(13, T), color: T.dim, lineHeight: 20}}>{renderInline(line, T, members, onMentionPress)}</Text>;
+  return <Text key={i} style={{fontSize: fs(13, T), color: T.dim, lineHeight: 20}} maxFontSizeMultiplier={1.3}>{renderInline(line, T, members, onMentionPress)}</Text>;
 };
 
 export const RichText = ({text, T, numberOfLines, members, onMentionPress}: {
@@ -263,14 +297,34 @@ export const RichText = ({text, T, numberOfLines, members, onMentionPress}: {
     if (mdImgMatch && mdImgMatch.index !== undefined) {
       const before = line.slice(0, mdImgMatch.index).trim();
       const after = line.slice(mdImgMatch.index + mdImgMatch[0].length).trim();
-      const url = mdImgMatch[2].replace(/[)]+$/, '').replace(/#\d+x\d+$/, '');
+      const rawUrl = mdImgMatch[2].trim();
+      const sizeHint = rawUrl.match(/#(\d+)x(\d+)$/);
+      const url = rawUrl.replace(/[)]+$/, '').replace(/#\d+x\d+$/, '').trim();
+      if (isValidImageUri(url) && (before || after)) {
+        const sideW = sizeHint ? Math.min(Number(sizeHint[1]), 130) : 110;
+        const sideH = sizeHint ? Math.round(sideW * (Number(sizeHint[2]) / Number(sizeHint[1]))) : Math.round(sideW * 1.4);
+        elements.push(
+          <View key={i * 3} style={{flexDirection: 'row', gap: 10, marginVertical: 2, alignItems: 'flex-start'}}>
+            <Image source={{uri: url}} style={{width: sideW, height: sideH, borderRadius: 8}} resizeMode="contain" />
+            <View style={{flex: 1, gap: 2}}>
+              {before ? renderMarkdownLine(before, T, i * 3 + 1, members, onMentionPress) : null}
+              {after ? renderMarkdownLine(after, T, i * 3 + 2, members, onMentionPress) : null}
+            </View>
+          </View>,
+        );
+        return;
+      }
       if (before) elements.push(renderMarkdownLine(before, T, i * 3, members, onMentionPress));
-      elements.push(<Image key={i * 3 + 1} source={{uri: url}} style={{width: '100%', height: 200, borderRadius: 8}} resizeMode="contain" />);
+      if (isValidImageUri(url)) {
+        elements.push(<Image key={i * 3 + 1} source={{uri: url}} style={{width: '100%', height: 200, borderRadius: 8}} resizeMode="contain" />);
+      } else {
+        elements.push(<Text key={i * 3 + 1} style={{fontSize: fs(11, T), color: T.muted, fontStyle: 'italic'}}>[broken image]</Text>);
+      }
       if (after) elements.push(renderMarkdownLine(after, T, i * 3 + 2, members, onMentionPress));
       return;
     }
     const imgMatch = line.match(IMAGE_URL_RE);
-    if (imgMatch) {
+    if (imgMatch && isValidImageUri(imgMatch[0])) {
       const before = line.slice(0, line.indexOf(imgMatch[0])).trim();
       const after = line.slice(line.indexOf(imgMatch[0]) + imgMatch[0].length).trim();
       if (before) elements.push(renderMarkdownLine(before, T, i * 3, members, onMentionPress));

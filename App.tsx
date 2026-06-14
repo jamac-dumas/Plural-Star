@@ -1,5 +1,7 @@
 import React, {useState, useEffect, useCallback, useMemo, useRef} from 'react';
-import {View, Text, TextInput, Image, TouchableOpacity, StyleSheet, StatusBar, Platform, PermissionsAndroid, Alert} from 'react-native';
+import {View, Image, TouchableOpacity, StyleSheet, StatusBar, Platform, PermissionsAndroid, Alert} from 'react-native';
+import {Text, TextInput, setAppTextDyslexicEnabled, setAppTextFont} from './src/components/AppText';
+import {fontFamilyForChoice} from './src/theme';
 import {SafeAreaProvider, useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useTranslation} from 'react-i18next';
 import notifee from '@notifee/react-native';
@@ -8,18 +10,19 @@ import './src/i18n/i18n';
 import i18n, {changeLanguage} from './src/i18n/i18n';
 import type {SupportedLanguage} from './src/i18n/i18n';
 
-import {T, BUILTIN_PALETTES, deriveTheme, DYSLEXIC_FONT} from './src/theme';
+import {T, BUILTIN_PALETTES, deriveTheme} from './src/theme';
 import type {CustomPalette, ThemeColors} from './src/theme';
 import {AccentText} from './src/components/AccentText';
 import {store, KEYS} from './src/storage';
-import {SystemInfo, Member, MemberGroup, FrontState, FrontTier, FrontTierKey, HistoryEntry, JournalEntry, JournalTemplate, ShareSettings, AppSettings, ChatChannel, ChatMessage, NoteboardEntry, DEFAULT_CHANNELS, findOpenFrontInHistory, migrateFrontState, frontToHistoryEntry, uid} from './src/utils';
-import {migrateInlineAvatars, migrateInlineChatMedia, clearAllMedia} from './src/utils/mediaUtils';
-import {showFrontNotification, clearFrontNotification, scheduleFrontCheckReminder, cancelFrontCheckReminder, showNoteboardNotification, clearNoteboardNotification} from './src/services/NotificationService';
+import {SystemInfo, Member, MemberGroup, FrontState, FrontTier, FrontTierKey, HistoryEntry, JournalEntry, JournalTemplate, ShareSettings, AppSettings, ChatChannel, ChatMessage, NoteboardEntry, DeviceCodes, MedicalData, DEFAULT_MEDICAL, DEFAULT_CHANNELS, findOpenFrontInHistory, migrateFrontState, frontToHistoryEntry, uid, makeDefaultCustomFronts, isFrontEmpty, allFrontMemberIds, singletStatuses, generateFriendCode, generateSyncCode, emergencyNotificationLine} from './src/utils';
+import {migrateInlineAvatars, migrateInlineChatMedia, clearAllMedia, migrateStaleMediaPaths, rebaseChatMessageMedia} from './src/utils/mediaUtils';
+import {showFrontNotification, clearFrontNotification, scheduleFrontCheckReminder, cancelFrontCheckReminder, showNoteboardNotification, clearNoteboardNotification, scheduleFrontNotificationRefresh, cancelFrontNotificationRefresh, setEmergencyNotificationInfo, rescheduleMedicationReminders, rescheduleAppointmentReminders} from './src/services/NotificationService';
 
 import {SetupScreen} from './src/screens/SetupScreen';
 import {LockScreen} from './src/screens/LockScreen';
 import {FrontScreen} from './src/screens/FrontScreen';
 import {MembersScreen} from './src/screens/MembersScreen';
+import {SystemManagerScreen} from './src/screens/SystemManagerScreen';
 import {HistoryScreen} from './src/screens/HistoryScreen';
 import {JournalScreen} from './src/screens/JournalScreen';
 import {ShareScreen} from './src/screens/ShareScreen';
@@ -28,7 +31,11 @@ import {StatsScreen} from './src/screens/StatsScreen';
 import {ChatScreen} from './src/screens/ChatScreen';
 import {CustomFieldsScreen} from './src/screens/CustomFieldsScreen';
 import {PollsScreen} from './src/screens/PollsScreen';
-import {SetFrontModal, EditFrontDetailModal, MemberModal, JournalModal, SystemModal} from './src/modals';
+import {SystemMapScreen} from './src/screens/SystemMapScreen';
+import {MedicalScreen} from './src/screens/MedicalScreen';
+import {StatusScreen} from './src/screens/StatusScreen';
+import {ProfileScreen} from './src/screens/ProfileScreen';
+import {SetFrontModal, SetStatusModal, EditFrontDetailModal, MemberModal, JournalModal, SystemModal, CustomFrontModal} from './src/modals';
 
 type Tab = 'front' | 'members' | 'hub' | 'journal' | 'history';
 
@@ -37,16 +44,11 @@ const TAB_ICONS: Record<Tab, string> = {
   front: '◈', members: '◇', hub: '⬡', journal: '◉', history: '◷',
 };
 
-const DEFAULT_SETTINGS: AppSettings = {locations: [], customMoods: [], lightMode: false, gpsEnabled: false, filesEnabled: true, language: 'en', notificationsEnabled: true, noteboardNotifications: true, activePaletteId: '__dark__', textScale: 1.0, useDyslexicFont: true};
+const DEFAULT_SETTINGS: AppSettings = {locations: [], customMoods: [], lightMode: false, gpsEnabled: false, filesEnabled: true, language: 'en', notificationsEnabled: true, noteboardNotifications: true, activePaletteId: '__dark__', textScale: 1.0, useDyslexicFont: false};
 
-const applyDyslexicDefault = (on: boolean) => {
-  const family = on ? DYSLEXIC_FONT : undefined;
-  (Text as any).defaultProps = (Text as any).defaultProps || {};
-  (Text as any).defaultProps.style = family ? {fontFamily: family} : undefined;
-  (TextInput as any).defaultProps = (TextInput as any).defaultProps || {};
-  (TextInput as any).defaultProps.style = family ? {fontFamily: family} : undefined;
+const setDyslexicEnabled = (on: boolean) => {
+  setAppTextDyslexicEnabled(on);
 };
-applyDyslexicDefault(true);
 
 const getGPSLocation = (): Promise<string | null> =>
   new Promise(async resolve => {
@@ -64,7 +66,7 @@ const getGPSLocation = (): Promise<string | null> =>
             const {latitude, longitude} = pos.coords;
             const res = await fetch(
               `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&zoom=10`,
-              {headers: {'User-Agent': 'PluralStar/1.7.1'}},
+              {headers: {'User-Agent': 'PluralStar/1.9.0'}},
             );
             const data = await res.json();
             const a = data.address || {};
@@ -85,6 +87,12 @@ function MainAppContent() {
   const [firstRun, setFirstRun] = useState(false);
   const [locked, setLocked] = useState(false);
   const [tab, setTab] = useState<Tab>('front');
+  const [systemMapRelCount, setSystemMapRelCount] = useState(0);
+  const [mapFocus, setMapFocus] = useState<{id: string; n: number} | null>(null);
+  const [mountedTabs, setMountedTabs] = useState<Tab[]>(['front']);
+  useEffect(() => {
+    setMountedTabs(prev => prev.includes(tab) ? prev : [...prev, tab]);
+  }, [tab]);
   const [hubResetKey, setHubResetKey] = useState(0);
   const [editHistoryIndex, setEditHistoryIndex] = useState<number | null>(null);
   const [system, setSystem] = useState<SystemInfo>({name: '', description: ''});
@@ -100,6 +108,7 @@ function MainAppContent() {
   const [activePaletteId, setActivePaletteId] = useState<string>('__dark__');
   const [chatChannels, setChatChannels] = useState<ChatChannel[]>([]);
   const [allChatMessages, setAllChatMessages] = useState<ChatMessage[]>([]);
+  const [medical, setMedical] = useState<MedicalData>(DEFAULT_MEDICAL);
 
   const [showSetFront, setShowSetFront] = useState(false);
   const [showEditFrontDetail, setShowEditFrontDetail] = useState(false);
@@ -107,6 +116,9 @@ function MainAppContent() {
   const [showMember, setShowMember] = useState(false);
   const [editMember, setEditMember] = useState<Member | null>(null);
   const [viewOnlyMember, setViewOnlyMember] = useState(false);
+  const [addCustomFront, setAddCustomFront] = useState(false);
+  const [showCustomFront, setShowCustomFront] = useState(false);
+  const [editCustomFront, setEditCustomFront] = useState<Member | null>(null);
   const [showJournal, setShowJournal] = useState(false);
   const [editJournal, setEditJournal] = useState<JournalEntry | null>(null);
   const [showSystem, setShowSystem] = useState(false);
@@ -120,6 +132,12 @@ function MainAppContent() {
     setEditMember(m);
     setViewOnlyMember(true);
     setShowMember(true);
+  };
+
+  const showMemberOnMap = (id: string) => {
+    setShowMember(false); setEditMember(null); setViewOnlyMember(false);
+    setMapFocus({id, n: Date.now()});
+    setTab('hub');
   };
 
   const C: ThemeColors = useMemo(() => {
@@ -138,8 +156,10 @@ function MainAppContent() {
         const msgs = await store.get<ChatMessage[]>(`ps:chat:${ch.id}`, []);
         if (msgs) {
           const {messages: migrated, changed} = await migrateInlineChatMedia(msgs);
-          if (changed) await store.set(`ps:chat:${ch.id}`, migrated);
-          allMsgs.push(...(changed ? migrated : msgs));
+          const {messages: rebased, changed: rebasedChanged} = rebaseChatMessageMedia(changed ? migrated : msgs);
+          const finalMsgs = rebasedChanged ? rebased : (changed ? migrated : msgs);
+          if (changed || rebasedChanged) await store.set(`ps:chat:${ch.id}`, finalMsgs);
+          allMsgs.push(...finalMsgs);
         }
       } catch (e) {
         console.error('[PS] chat load error:', ch.id, e);
@@ -165,12 +185,7 @@ function MainAppContent() {
         store.get<ChatChannel[]>(KEYS.chatChannels, []),
       ]);
       console.log(`[STARTUP] loadAll begin — sys:${!!sys} members:${(mem||[]).length} groups:${(grps||[]).length} journal:${(jour||[]).length} history:${(hist||[]).length} channels:${(savedChannels||[]).length}`);
-      if (!sys) {
-        console.warn('[STARTUP] No system info loaded — entering first-run state. If this is unexpected, check for AsyncStorage failures above.');
-        setFirstRun(true);
-      } else {
-        setSystem(sys);
-      }
+      let loadedSystem = sys;
       let loadedMembers = mem || [];
       try {
         const {members: migratedMembers, changed: avatarsChanged} = await migrateInlineAvatars(loadedMembers);
@@ -180,6 +195,31 @@ function MainAppContent() {
         }
       } catch (e) {
         console.error('[PS] avatar migration error:', e);
+      }
+      try {
+        const {members: rebasedMembers, system: rebasedSystem, changed: pathsChanged} = await migrateStaleMediaPaths(loadedMembers, loadedSystem);
+        if (pathsChanged) {
+          loadedMembers = rebasedMembers;
+          loadedSystem = rebasedSystem;
+          await store.set(KEYS.members, loadedMembers);
+          if (rebasedSystem) await store.set(KEYS.system, rebasedSystem);
+          console.log('[STARTUP] rebased stale Documents:// media paths');
+        }
+      } catch (e) {
+        console.error('[PS] media path rebase error:', e);
+      }
+      let loadedSettingsObj: AppSettings = {...DEFAULT_SETTINGS, ...(settings || {})};
+      if (!loadedSettingsObj.customFrontsSeeded) {
+        loadedMembers = [...loadedMembers, ...makeDefaultCustomFronts()];
+        loadedSettingsObj = {...loadedSettingsObj, customFrontsSeeded: true};
+        await store.set(KEYS.members, loadedMembers);
+        await store.set(KEYS.settings, loadedSettingsObj);
+      }
+      if (!loadedSystem) {
+        console.warn('[STARTUP] No system info loaded — entering first-run state. If this is unexpected, check for AsyncStorage failures above.');
+        setFirstRun(true);
+      } else {
+        setSystem(loadedSystem);
       }
       setMembers(loadedMembers);
       const migratedFront = migrateFrontState(fr) || findOpenFrontInHistory(hist || []);
@@ -191,7 +231,7 @@ function MainAppContent() {
       setJournal(jour || []);
       setJournalTemplates(jourTemplates || []);
       setShareSettings(share || {showFront: true, showMembers: true, showDescriptions: false});
-      const mergedSettings = {...DEFAULT_SETTINGS, ...(settings || {})};
+      const mergedSettings = loadedSettingsObj;
       setAppSettings(mergedSettings);
       setGroups(grps || []);
       setPalettes(savedPalettes || []);
@@ -209,6 +249,27 @@ function MainAppContent() {
         setActivePaletteId('__light__');
       } else {
         setActivePaletteId(paletteId);
+      }
+
+      try {
+        const savedMedical = await store.get<MedicalData>(KEYS.medical);
+        const med: MedicalData = {...DEFAULT_MEDICAL, ...(savedMedical || {})};
+        setMedical(med);
+        setEmergencyNotificationInfo(emergencyNotificationLine(med.emergency));
+        await rescheduleMedicationReminders(med.medications || []);
+        await rescheduleAppointmentReminders(med.appointments || []);
+      } catch (e) {
+        console.error('[PS] medical init error:', e);
+      }
+
+      try {
+        const savedCodes = await store.get<DeviceCodes>(KEYS.deviceCodes);
+        if (!savedCodes || !savedCodes.friendCode || !savedCodes.syncCode) {
+          const fresh: DeviceCodes = {friendCode: generateFriendCode(), syncCode: generateSyncCode(), createdAt: Date.now()};
+          await store.set(KEYS.deviceCodes, fresh);
+        }
+      } catch (e) {
+        console.error('[PS] device codes init error:', e);
       }
 
       if (savedLang) changeLanguage(savedLang as SupportedLanguage);
@@ -289,9 +350,10 @@ function MainAppContent() {
   useEffect(() => { if (loaded && !firstRun) requestPermissions(); }, [loaded, firstRun]);
 
   useEffect(() => {
-    applyDyslexicDefault(appSettings.useDyslexicFont !== false);
+    const choice = appSettings.fontChoice ?? (appSettings.useDyslexicFont === true ? 'opendyslexic' : 'default');
+    setAppTextFont(fontFamilyForChoice(choice));
     setDyslexicTick(t => t + 1);
-  }, [appSettings.useDyslexicFont]);
+  }, [appSettings.fontChoice, appSettings.useDyslexicFont]);
 
   useEffect(() => {
     if (appSettings.notificationsEnabled) { showFrontNotification(front, members, system.name).catch(e => console.error('[PS] notif error:', e)); }
@@ -309,13 +371,22 @@ function MainAppContent() {
     if (!appSettings.notificationsEnabled || interval <= 0) {
       cancelFrontCheckReminder().catch(e => console.error('[PS] front-check cancel error:', e));
     } else {
-      scheduleFrontCheckReminder(interval).catch(e => console.error('[PS] front-check schedule error:', e));
+      scheduleFrontCheckReminder(interval, appSettings.accountMode === 'singlet').catch(e => console.error('[PS] front-check schedule error:', e));
     }
-  }, [appSettings.frontCheckInterval, appSettings.notificationsEnabled]);
+  }, [appSettings.frontCheckInterval, appSettings.notificationsEnabled, appSettings.accountMode]);
+
+  useEffect(() => {
+    const mins = appSettings.notificationRefreshMinutes || 0;
+    if (!front || !appSettings.notificationsEnabled || mins <= 0) {
+      cancelFrontNotificationRefresh().catch(e => console.error('[PS] notif refresh cancel error:', e));
+    } else {
+      scheduleFrontNotificationRefresh(front, members, mins).catch(e => console.error('[PS] notif refresh schedule error:', e));
+    }
+  }, [front, members, appSettings.notificationRefreshMinutes, appSettings.notificationsEnabled]);
 
   const prevFrontIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!appSettings.notificationsEnabled || !appSettings.noteboardNotifications) {
+    if (!appSettings.notificationsEnabled || !appSettings.noteboardNotifications || appSettings.accountMode === 'singlet') {
       prevFrontIdsRef.current = new Set();
       clearNoteboardNotification().catch(() => {});
       return;
@@ -359,7 +430,7 @@ function MainAppContent() {
         }
       } catch (e) { console.error('[PS] noteboard unread check error:', e); }
     })();
-  }, [front, members, appSettings.notificationsEnabled, appSettings.noteboardNotifications]);
+  }, [front, members, appSettings.notificationsEnabled, appSettings.noteboardNotifications, appSettings.accountMode]);
 
   const saveSystem = async (d: SystemInfo) => {setSystem(d); await store.set(KEYS.system, d);};
   const saveMembers = async (d: Member[]) => {
@@ -369,6 +440,17 @@ function MainAppContent() {
     }
     setMembers(d);
     await store.set(KEYS.members, d);
+    const archivedIds = new Set(d.filter(m => m.archived).map(m => m.id));
+    if (archivedIds.size > 0 && front) {
+      const pruneTier = (tier: any) => tier ? {...tier, memberIds: (tier.memberIds || []).filter((id: string) => !archivedIds.has(id))} : tier;
+      const next: any = {...front, primary: pruneTier(front.primary), coFront: pruneTier(front.coFront), coConscious: pruneTier(front.coConscious)};
+      const count = (f: any) => (f?.primary?.memberIds?.length || 0) + (f?.coFront?.memberIds?.length || 0) + (f?.coConscious?.memberIds?.length || 0);
+      if (count(next) !== count(front)) {
+        const cleaned = isFrontEmpty(next) ? null : next;
+        setFront(cleaned);
+        await store.set(KEYS.front, cleaned);
+      }
+    }
   };
   const saveHistory = async (d: HistoryEntry[]) => {
     if (!loaded && d.length === 0) return;
@@ -389,6 +471,17 @@ function MainAppContent() {
   };
   const savePalettes = async (d: CustomPalette[]) => {setPalettes(d); await store.set(KEYS.palettes, d);};
   const saveChatChannels = async (d: ChatChannel[]) => {setChatChannels(d); await store.set(KEYS.chatChannels, d); await loadChatMessages(d);};
+
+  const saveMedical = async (d: MedicalData) => {
+    setMedical(d);
+    await store.set(KEYS.medical, d);
+    setEmergencyNotificationInfo(emergencyNotificationLine(d.emergency));
+    await rescheduleMedicationReminders(d.medications || []);
+    await rescheduleAppointmentReminders(d.appointments || []);
+    if (appSettings.notificationsEnabled) {
+      showFrontNotification(front, members, system.name).catch(e => console.error('[PS] notif error:', e));
+    }
+  };
 
   const selectPalette = async (id: string) => {
     setActivePaletteId(id);
@@ -415,6 +508,11 @@ function MainAppContent() {
     if (loc) { setLastKnownLocation(loc); await store.set('ps:lastLocation', loc); }
   };
 
+  const clearLastLocation = async () => {
+    setLastKnownLocation(undefined);
+    await store.remove('ps:lastLocation');
+  };
+
   useEffect(() => { store.get<string>('ps:lastLocation').then(loc => { if (loc) setLastKnownLocation(loc); }); }, []);
 
   const maybeGPS = async (manualLocation?: string): Promise<string | undefined> => {
@@ -426,11 +524,6 @@ function MainAppContent() {
 
   const updateFront = async (primary: FrontTier, coFront: FrontTier, coConscious: FrontTier) => {
     const now = Date.now();
-    let newHistory = [...history];
-    if (front) {
-      newHistory = newHistory.map(e =>
-        e.endTime === null && e.startTime === front.startTime && e.changeType === 'front' ? {...e, endTime: now} : e);
-    }
     const cleanTier = (tier: FrontTier): FrontTier =>
       tier.memberIds.length === 0
         ? {memberIds: [], mood: undefined, note: '', location: undefined, energyLevel: undefined}
@@ -440,12 +533,45 @@ function MainAppContent() {
     const cleanCoConscious = cleanTier(coConscious);
     const isEmpty = cleanPrimary.memberIds.length === 0 && cleanCoFront.memberIds.length === 0 && cleanCoConscious.memberIds.length === 0;
 
-    const quickLocation = cleanPrimary.location?.trim() || lastKnownLocation || undefined;
-    const nf: FrontState | null = isEmpty ? null : {primary: {...cleanPrimary, location: quickLocation}, coFront: cleanCoFront, coConscious: cleanCoConscious, startTime: now};
+    const sameMembers = (a: string[] = [], b: string[] = []) =>
+      a.length === b.length && [...a].sort().join('|') === [...b].sort().join('|');
+    const continuing = !!front && !isEmpty
+      && sameMembers(front.primary.memberIds, cleanPrimary.memberIds)
+      && sameMembers(front.coFront.memberIds, cleanCoFront.memberIds)
+      && sameMembers(front.coConscious.memberIds, cleanCoConscious.memberIds);
+
+    const explicitLocation = cleanPrimary.location?.trim() || undefined;
+    const nf: FrontState | null = isEmpty ? null : {primary: {...cleanPrimary, location: explicitLocation}, coFront: cleanCoFront, coConscious: cleanCoConscious, startTime: continuing ? front!.startTime : now};
+
+    let newHistory = [...history];
+    if (front && !continuing) {
+      newHistory = newHistory.map(e =>
+        e.endTime === null && e.startTime === front.startTime && (!e.changeType || e.changeType === 'front') ? {...e, endTime: now} : e);
+    }
 
     if (nf) {
       const frontEntry = frontToHistoryEntry(nf, null, 'front');
-      newHistory = [frontEntry, ...newHistory].slice(0, 1000);
+      if (continuing) {
+        const extras: HistoryEntry[] = [];
+        const moodChanged = (nf.primary.mood || undefined) !== (front!.primary.mood || undefined);
+        const locChanged = (nf.primary.location || undefined) !== (front!.primary.location || undefined);
+        const noteChanged = (nf.primary.note || undefined) !== (front!.primary.note || undefined);
+        if (moodChanged || locChanged) {
+          const entry = frontToHistoryEntry(nf, null, moodChanged ? 'mood' : 'location');
+          entry.changeTime = now;
+          extras.push(entry);
+        }
+        if (noteChanged) {
+          const entry = frontToHistoryEntry(nf, null, 'note');
+          entry.changeTime = now + 1;
+          extras.push(entry);
+        }
+        newHistory = newHistory.map(e =>
+          e.endTime === null && e.startTime === front!.startTime && (!e.changeType || e.changeType === 'front') ? frontEntry : e);
+        newHistory = [...extras, ...newHistory];
+      } else {
+        newHistory = [frontEntry, ...newHistory];
+      }
     }
 
     setFront(nf);
@@ -480,15 +606,17 @@ function MainAppContent() {
     if (nf && appSettings.gpsEnabled && !cleanPrimary.location?.trim()) {
       try {
         const gpsLocation = await getGPSLocation();
-        if (gpsLocation && gpsLocation !== quickLocation) {
+        if (gpsLocation && gpsLocation !== explicitLocation) {
           const patched: FrontState = {...nf, primary: {...nf.primary, location: gpsLocation}};
           setFront(patched);
           await store.set(KEYS.front, patched);
           await updateLastLocation(gpsLocation);
         }
       } catch (e) { console.error('[PS] GPS post-save error:', e); }
-    } else if (quickLocation) {
-      await updateLastLocation(quickLocation);
+    } else if (explicitLocation) {
+      await updateLastLocation(explicitLocation);
+    } else if (nf) {
+      await clearLastLocation();
     }
   };
 
@@ -496,18 +624,21 @@ function MainAppContent() {
     if (!front) return;
     const now = Date.now();
     const tierData = front[tier];
-    const resolvedLocation = tier === 'primary' ? await maybeGPS(location?.trim() || lastKnownLocation) : tierData.location;
+    const resolvedLocation = tier === 'primary' ? await maybeGPS(location) : tierData.location;
     const updatedTier = {...tierData, mood, location: resolvedLocation, note: note ?? tierData.note};
     const updated = {...front, [tier]: updatedTier};
     setFront(updated); await store.set(KEYS.front, updated);
-    if (resolvedLocation && tier === 'primary') await updateLastLocation(resolvedLocation);
+    if (tier === 'primary') {
+      if (resolvedLocation) await updateLastLocation(resolvedLocation);
+      else await clearLastLocation();
+    }
     const extras: HistoryEntry[] = [];
     const moodChanged = (mood || undefined) !== (tierData.mood || undefined);
     const locChanged = tier === 'primary' && (resolvedLocation || undefined) !== (tierData.location || undefined);
     const noteChanged = note !== undefined && (note || undefined) !== (tierData.note || undefined);
     if (moodChanged || locChanged) { const entry = frontToHistoryEntry(updated, null, moodChanged ? 'mood' : 'location', tier); entry.changeTime = now; extras.push(entry); }
     if (noteChanged) { const entry = frontToHistoryEntry(updated, null, 'note', tier); entry.changeTime = now + 1; extras.push(entry); }
-    if (extras.length > 0) await saveHistory([...extras, ...history].slice(0, 1000));
+    if (extras.length > 0) await saveHistory([...extras, ...history]);
   };
 
   const saveMember = async (m: Member) => {
@@ -523,6 +654,10 @@ function MainAppContent() {
     const idSet = new Set(ids);
     await saveMembers(members.filter(m => !idSet.has(m.id)));
   };
+  const bulkAddGroups = async (ids: string[], groupIds: string[]) => {
+    const idSet = new Set(ids);
+    await saveMembers(members.map(m => idSet.has(m.id) ? {...m, groupIds: [...new Set([...(m.groupIds || []), ...groupIds])]} : m));
+  };
   const saveEntry = async (e: JournalEntry) => {
     const u = journal.find(x => x.id === e.id) ? journal.map(x => (x.id === e.id ? e : x)) : [e, ...journal];
     await saveJournal(u);
@@ -537,13 +672,22 @@ function MainAppContent() {
     setShareSettings({showFront: true, showMembers: true, showDescriptions: false});
     setAppSettings(DEFAULT_SETTINGS); setGroups([]); setPalettes([]); setActivePaletteId('__dark__');
     setChatChannels([]); setAllChatMessages([]);
-    setTab('front'); setFirstRun(true);
+    setMedical(DEFAULT_MEDICAL); setEmergencyNotificationInfo(null);
+    await rescheduleMedicationReminders([]);
+    await rescheduleAppointmentReminders([]);
+    setTab('front'); setMountedTabs(['front']); setFirstRun(true);
   };
 
   const handleHubSetFront = async (f: FrontState | null) => {
     setFront(f);
     await store.set(KEYS.front, f);
   };
+
+  const isSinglet = appSettings.accountMode === 'singlet';
+  const selfMember = isSinglet
+    ? (members.find(m => m.id === appSettings.selfMemberId && !m.isCustomFront)
+      || members.find(m => !m.isCustomFront && !m.archived))
+    : undefined;
 
   if (!loaded) {
     return (
@@ -559,7 +703,15 @@ function MainAppContent() {
     return (
       <>
         <StatusBar barStyle="light-content" backgroundColor={C.bg} translucent={false} />
-        <SetupScreen theme={C} onSave={async s => {await saveSystem(s); setFirstRun(false); setTimeout(requestPermissions, 500);}} />
+        <SetupScreen theme={C} onSave={async s => {
+          await saveSystem({name: s.name, description: s.description});
+          if (s.singlet) {
+            const self: Member = {id: uid(), name: s.name, pronouns: '', role: '', color: '#DAA520', description: '', tags: [], groupIds: [], customFields: [], createdAt: Date.now()};
+            await saveMembers([...members, self]);
+            await saveAppSettings({...appSettings, accountMode: 'singlet', selfMemberId: self.id});
+          }
+          setFirstRun(false); setTimeout(requestPermissions, 500);
+        }} />
       </>
     );
   }
@@ -575,12 +727,28 @@ function MainAppContent() {
 
   const handleEditDetails = (tier: FrontTierKey) => { setEditTier(tier); setShowEditFrontDetail(true); };
 
+  const ensureSelfMember = async (): Promise<Member> => {
+    if (selfMember) {
+      if (selfMember.id !== appSettings.selfMemberId) await saveAppSettings({...appSettings, selfMemberId: selfMember.id});
+      return selfMember;
+    }
+    const nm: Member = {id: uid(), name: system.name || t('share.system'), pronouns: '', role: '', color: '#DAA520', description: '', tags: [], groupIds: [], customFields: [], createdAt: Date.now()};
+    await saveMembers([...members, nm]);
+    await saveAppSettings({...appSettings, selfMemberId: nm.id});
+    return nm;
+  };
+  const tabLabel = (id: Tab): string => {
+    if (isSinglet && id === 'front') return t('tabs.status');
+    if (isSinglet && id === 'members') return t('tabs.profile');
+    return t(`tabs.${id}`);
+  };
+
   const renderShareScreen = () => (
     <ShareScreen theme={C} system={system} members={members} front={front} history={history} journal={journal} shareSettings={shareSettings} appSettings={appSettings} onSettingsChange={saveShareSettings} getMember={getMember} onDataImported={loadAll} onAddJournalEntry={addJournalEntry} onDeleteAccount={handleDeleteAccount} />
   );
 
   const renderStatsScreen = () => (
-    <StatsScreen theme={C} history={history} members={members} chatMessages={allChatMessages} />
+    <StatsScreen theme={C} history={history} members={members} chatMessages={allChatMessages} singlet={isSinglet} selfId={selfMember?.id} />
   );
 
   const renderChatScreen = () => (
@@ -595,15 +763,45 @@ function MainAppContent() {
     <PollsScreen theme={C} members={members} />
   );
 
-  const renderScreen = () => {
-    switch (tab) {
+  const renderSystemMapScreen = () => (
+    <SystemMapScreen theme={C} members={members} onViewMember={openMemberById} onRelCountChange={setSystemMapRelCount} focus={mapFocus} />
+  );
+
+  const renderMedicalScreen = () => (
+    <MedicalScreen theme={C} medical={medical} onSave={saveMedical} />
+  );
+
+  const renderArchiveScreen = () => (
+    <MembersScreen theme={C} members={members} front={front} groups={groups} archiveOnly
+      onAdd={() => {}}
+      onEdit={m => {setEditMember(m); setViewOnlyMember(false); setAddCustomFront(false); setShowMember(true);}}
+      onView={m => {setEditMember(m); setViewOnlyMember(true); setShowMember(true);}}
+      onSaveGroups={saveGroups}
+      onBulkRestore={(ids: string[]) => bulkSetArchived(ids, false)}
+      onBulkDelete={bulkDeleteMembers}
+    />
+  );
+
+  const renderScreenFor = (id: Tab) => {
+    switch (id) {
       case 'front':
+        if (isSinglet) {
+          return <StatusScreen theme={C} front={front} getMember={getMember} selfId={selfMember?.id}
+            onSetStatus={async () => {await ensureSelfMember(); setShowSetFront(true);}} onEditDetails={handleEditDetails} />;
+        }
         return <FrontScreen theme={C} front={front} getMember={getMember} onSetFront={() => setShowSetFront(true)} onEditDetails={handleEditDetails} />;
       case 'members':
-        return <MembersScreen theme={C} members={members} front={front} groups={groups} initialSortMode={appSettings.memberSortMode}
-          onAdd={() => {setEditMember(null); setViewOnlyMember(false); setShowMember(true);}}
-          onEdit={m => {setEditMember(m); setViewOnlyMember(false); setShowMember(true);}}
-          onView={m => {setEditMember(m); setViewOnlyMember(true); setShowMember(true);}}
+        if (isSinglet) {
+          return <ProfileScreen theme={C} member={selfMember} statuses={singletStatuses(members)} front={front}
+            onEditProfile={async () => {const self = await ensureSelfMember(); setEditMember(self); setViewOnlyMember(false); setAddCustomFront(false); setShowMember(true);}}
+            onAddStatus={() => {setEditCustomFront(null); setShowCustomFront(true);}}
+            onEditStatus={m => {setEditCustomFront(m); setShowCustomFront(true);}} />;
+        }
+        return <MembersScreen theme={C} members={members} front={front} groups={groups} initialSortMode={appSettings.memberSortMode} memberListFields={appSettings.memberListFields} onSaveListFields={async (next: any) => {const sNext = {...appSettings, memberListFields: next}; setAppSettings(sNext); await store.set(KEYS.settings, sNext);}}
+          onAdd={() => {setEditMember(null); setViewOnlyMember(false); setAddCustomFront(false); setShowMember(true);}}
+          onAddCustomFront={() => {setEditCustomFront(null); setShowCustomFront(true);}}
+          onEdit={m => { if (m.isCustomFront) {setEditCustomFront(m); setShowCustomFront(true);} else {setEditMember(m); setViewOnlyMember(false); setShowMember(true);} }}
+          onView={m => { if (m.isCustomFront) {setEditCustomFront(m); setShowCustomFront(true);} else {setEditMember(m); setViewOnlyMember(true); setShowMember(true);} }}
           onSaveGroups={saveGroups} onSaveSortMode={async (mode) => {const next = {...appSettings, memberSortMode: mode}; setAppSettings(next); await store.set(KEYS.settings, next);}} onReorderMember={async (id, direction) => {
           const active = members.filter(m => !m.archived);
           const archived = members.filter(m => m.archived);
@@ -621,13 +819,14 @@ function MainAppContent() {
           onBulkArchive={(ids: string[]) => bulkSetArchived(ids, true)}
           onBulkRestore={(ids: string[]) => bulkSetArchived(ids, false)}
           onBulkDelete={bulkDeleteMembers}
+          onBulkAddGroups={bulkAddGroups}
         />;
       case 'hub':
-        return <HubScreen theme={C} members={members} history={history} front={front} onSaveHistory={saveHistory} onSetFront={handleHubSetFront} renderShareScreen={renderShareScreen} renderStatsScreen={renderStatsScreen} renderChatScreen={renderChatScreen} renderCustomFieldsScreen={renderCustomFieldsScreen} renderPollsScreen={renderPollsScreen} resetKey={hubResetKey} editHistoryIndex={editHistoryIndex} onClearEditHistory={() => setEditHistoryIndex(null)} />;
+        return <HubScreen theme={C} singlet={isSinglet} selfId={selfMember?.id} members={members} history={history} front={front} onSaveHistory={saveHistory} onSetFront={handleHubSetFront} renderShareScreen={renderShareScreen} renderStatsScreen={renderStatsScreen} renderChatScreen={renderChatScreen} renderCustomFieldsScreen={renderCustomFieldsScreen} renderSystemManagerScreen={() => <SystemManagerScreen theme={C} members={members} groups={groups} onSaveGroups={saveGroups} onViewMember={openMemberById} />} renderArchiveScreen={renderArchiveScreen} renderPollsScreen={renderPollsScreen} renderSystemMapScreen={renderSystemMapScreen} systemMapRelCount={systemMapRelCount} mapFocus={mapFocus} renderMedicalScreen={renderMedicalScreen} resetKey={hubResetKey} editHistoryIndex={editHistoryIndex} onClearEditHistory={() => setEditHistoryIndex(null)} />;
       case 'journal':
-        return <JournalScreen theme={C} journal={journal} templates={journalTemplates} members={members} systemJournalPassword={system.journalPassword} onAdd={() => {setEditJournal(null); setShowJournal(true);}} onEdit={e => {setEditJournal(e); setShowJournal(true);}} onDelete={deleteEntry} onSaveTemplates={saveJournalTemplates} onMentionPress={openMemberById} />;
+        return <JournalScreen theme={C} journal={journal} templates={journalTemplates} members={members} systemJournalPassword={system.journalPassword} onAdd={() => {setEditJournal(null); setShowJournal(true);}} onEdit={e => {setEditJournal(e); setShowJournal(true);}} onDelete={deleteEntry} onTogglePin={e => saveEntry({...e, pinned: !e.pinned})} onSaveTemplates={saveJournalTemplates} onMentionPress={openMemberById} />;
       case 'history':
-        return <HistoryScreen theme={C} history={history} journal={journal} getMember={getMember} members={members} onSaveHistory={saveHistory} onEditEntry={(idx: number) => {setEditHistoryIndex(idx); setTab('hub');}} />;
+        return <HistoryScreen theme={C} history={history} journal={journal} getMember={getMember} members={members} singlet={isSinglet} selfId={selfMember?.id} onSaveHistory={saveHistory} onEditEntry={(idx: number) => {setEditHistoryIndex(idx); setTab('hub');}} />;
     }
   };
 
@@ -636,47 +835,77 @@ function MainAppContent() {
       <StatusBar barStyle={C.isLight ? 'dark-content' : 'light-content'} backgroundColor={C.bg} translucent={false} />
       <View style={{backgroundColor: C.bg, paddingTop: Platform.OS === 'ios' ? Math.max(insets.top - 6, 0) : Math.max(StatusBar.currentHeight || 0, insets.top || 0, 28)}}>
         <View style={[styles.header, {borderBottomColor: C.border, backgroundColor: C.bg}]}>
-          <AccentText T={C} style={[styles.headerTitle, {color: C.accent}]}>{system.name}</AccentText>
-          <View style={styles.headerRight}>
+          <AccentText
+            T={C}
+            style={[styles.headerTitle, {color: C.accent, flex: 1, marginRight: 8}]}
+            numberOfLines={1}
+            accessibilityRole="header"
+            maxFontSizeMultiplier={1.2}>{system.name}</AccentText>
+          <View style={styles.headerRight} accessibilityRole="toolbar" accessibilityLabel={t('a11y.toolbar')}>
             <TouchableOpacity
               onPress={() => { if (appSettings.appLockPassword) setLocked(true); }}
               disabled={!appSettings.appLockPassword}
               activeOpacity={appSettings.appLockPassword ? 0.7 : 1}
+              accessibilityRole="button"
+              accessibilityLabel={t('a11y.lockApp')}
+              accessibilityState={{disabled: !appSettings.appLockPassword}}
               style={styles.settingsBtn}>
-              <Text style={[styles.settingsIcon, {color: appSettings.appLockPassword ? C.dim : C.muted, opacity: appSettings.appLockPassword ? 1 : 0.35}]}>🔒</Text>
+              <Text style={[styles.settingsIcon, {color: appSettings.appLockPassword ? C.dim : C.muted, opacity: appSettings.appLockPassword ? 1 : 0.35}]} maxFontSizeMultiplier={1.2} allowFontScaling={false} importantForAccessibility="no" accessibilityElementsHidden>🔒</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setShowSystem(true)} activeOpacity={0.7} style={styles.settingsBtn}>
-              <Text style={[styles.settingsIcon, {color: C.dim}]}>⚙</Text>
+            <TouchableOpacity onPress={() => setShowSystem(true)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('a11y.settings')} style={styles.settingsBtn}>
+              <Text style={[styles.settingsIcon, {color: C.dim}]} maxFontSizeMultiplier={1.2} allowFontScaling={false} importantForAccessibility="no" accessibilityElementsHidden>⚙</Text>
             </TouchableOpacity>
           </View>
         </View>
       </View>
-      <View style={styles.content}>{renderScreen()}</View>
-      <View style={[styles.tabBar, {backgroundColor: C.surface, borderTopColor: C.border}]}>
+      <View style={styles.content}>
+        {TAB_IDS.map(id => mountedTabs.includes(id) ? (
+          <View key={id} style={{flex: 1, display: tab === id ? 'flex' : 'none'}}>
+            {renderScreenFor(id)}
+          </View>
+        ) : null)}
+      </View>
+      <View style={[styles.tabBar, {backgroundColor: C.surface, borderTopColor: C.border}]} accessibilityRole="tablist" accessibilityLabel={t('a11y.mainNav')}>
         {TAB_IDS.map(id => (
-          <TouchableOpacity key={id} onPress={() => { if (id === 'hub' && tab === 'hub') setHubResetKey(k => k + 1); setTab(id); }} activeOpacity={0.7} style={[styles.tabBtn, {paddingBottom: 8 + (insets.bottom || 0)}]}>
-            <AccentText T={C} style={[styles.tabIcon, {color: tab === id ? C.accent : C.dim, fontSize: fs(18)}]}>{TAB_ICONS[id]}</AccentText>
-            <AccentText T={C} style={[styles.tabLabel, {color: tab === id ? C.accent : C.dim, fontSize: fs(9)}]}>{t(`tabs.${id}`)}</AccentText>
+          <TouchableOpacity key={id} onPress={() => { if (id === 'hub' && tab === 'hub') setHubResetKey(k => k + 1); setTab(id); }} activeOpacity={0.7} accessibilityRole="tab" accessibilityState={{selected: tab === id}} accessibilityLabel={tabLabel(id)} style={[styles.tabBtn, {paddingBottom: 8 + (insets.bottom || 0)}]}>
+            <AccentText T={C} style={[styles.tabIcon, {color: tab === id ? C.accent : C.dim, fontSize: fs(18)}]} maxFontSizeMultiplier={1.2}>{TAB_ICONS[id]}</AccentText>
+            <AccentText T={C} style={[styles.tabLabel, {color: tab === id ? C.accent : C.dim, fontSize: fs(9)}]} numberOfLines={1} allowFontScaling={false}>{tabLabel(id)}</AccentText>
           </TouchableOpacity>
         ))}
       </View>
 
-      <SetFrontModal visible={showSetFront} theme={C} members={members.filter(m => !m.archived)} groups={groups} current={front} settings={appSettings}
-        lastKnownLocation={lastKnownLocation}
-        onSave={async (primary: FrontTier, coFront: FrontTier, coConscious: FrontTier) => {await updateFront(primary, coFront, coConscious); setShowSetFront(false);}}
-        onClose={() => setShowSetFront(false)} />
+      {isSinglet ? (
+        <SetStatusModal visible={showSetFront} theme={C} statuses={singletStatuses(members)} selfId={selfMember?.id} current={front} settings={appSettings}
+          lastKnownLocation={lastKnownLocation}
+          onSave={async (primary: FrontTier, coFront: FrontTier, coConscious: FrontTier) => {await updateFront(primary, coFront, coConscious); setShowSetFront(false);}}
+          onClose={() => setShowSetFront(false)} />
+      ) : (
+        <SetFrontModal visible={showSetFront} theme={C} members={members.filter(m => !m.archived)} groups={groups} current={front} settings={appSettings}
+          lastKnownLocation={lastKnownLocation}
+          onSave={async (primary: FrontTier, coFront: FrontTier, coConscious: FrontTier) => {await updateFront(primary, coFront, coConscious); setShowSetFront(false);}}
+          onClose={() => setShowSetFront(false)} />
+      )}
       {front && (
-        <EditFrontDetailModal visible={showEditFrontDetail} theme={C} front={front} tier={editTier} settings={appSettings}
+        <EditFrontDetailModal visible={showEditFrontDetail} theme={C} front={front} tier={editTier} settings={appSettings} statusMode={isSinglet}
           lastKnownLocation={lastKnownLocation}
           onSave={async (mood: string, location: string, note: string) => {await updateFrontDetails(editTier, mood, location, note); setShowEditFrontDetail(false);}}
           onClose={() => setShowEditFrontDetail(false)} />
       )}
       <MemberModal key={`${editMember?.id || 'new-member'}-${viewOnlyMember ? 'view' : 'edit'}`} visible={showMember} theme={C} member={editMember} members={members} groups={groups} settings={appSettings}
         readOnly={viewOnlyMember}
+        profileMode={isSinglet && editMember?.id === selfMember?.id && !editMember?.isCustomFront}
+        onRequestEdit={isSinglet && viewOnlyMember ? () => setViewOnlyMember(false) : undefined}
+        isFronting={!!editMember && allFrontMemberIds(front).includes(editMember.id)}
         onMentionPress={openMemberById}
-        onSave={async (m: Member) => {await saveMember(m); setShowMember(false); setEditMember(null); setViewOnlyMember(false);}}
+        onShowOnMap={showMemberOnMap}
+        onSave={async (m: Member) => {await saveMember(addCustomFront && !editMember ? {...m, isCustomFront: true} : m); setShowMember(false); setEditMember(null); setViewOnlyMember(false); setAddCustomFront(false);}}
         onDelete={async (id: string) => {await deleteMember(id); setShowMember(false); setEditMember(null); setViewOnlyMember(false);}}
         onClose={() => {setShowMember(false); setEditMember(null); setViewOnlyMember(false);}} />
+      <CustomFrontModal visible={showCustomFront} theme={C} customFront={editCustomFront} statusMode={isSinglet}
+        isFronting={!!editCustomFront && allFrontMemberIds(front).includes(editCustomFront.id)}
+        onSave={async (m: Member) => {await saveMember({...m, isCustomFront: true}); setShowCustomFront(false); setEditCustomFront(null);}}
+        onDelete={async (id: string) => {await deleteMember(id); setShowCustomFront(false); setEditCustomFront(null);}}
+        onClose={() => {setShowCustomFront(false); setEditCustomFront(null);}} />
       <JournalModal visible={showJournal} theme={C} entry={editJournal} members={members} templates={journalTemplates}
         onMentionPress={openMemberById}
         onSave={async (e: JournalEntry) => {await saveEntry(e); setShowJournal(false);}}
@@ -684,7 +913,20 @@ function MainAppContent() {
       <SystemModal visible={showSystem} theme={C} system={system} settings={appSettings}
         palettes={palettes} activePaletteId={activePaletteId}
         onSave={async (s: SystemInfo) => {await saveSystem(s); setShowSystem(false);}}
-        onSaveSettings={async (s: AppSettings) => {await saveAppSettings(s); setShowSystem(false);}}
+        onSaveSettings={async (s: AppSettings) => {
+          let next = s;
+          if (s.accountMode === 'singlet' && !members.find(m => m.id === s.selfMemberId && !m.isCustomFront)) {
+            const existing = members.find(m => !m.isCustomFront && !m.archived);
+            if (existing) {
+              next = {...s, selfMemberId: existing.id};
+            } else {
+              const nm: Member = {id: uid(), name: system.name || t('share.system'), pronouns: '', role: '', color: '#DAA520', description: '', tags: [], groupIds: [], customFields: [], createdAt: Date.now()};
+              await saveMembers([...members, nm]);
+              next = {...s, selfMemberId: nm.id};
+            }
+          }
+          await saveAppSettings(next); setShowSystem(false);
+        }}
         onSavePalettes={savePalettes}
         onSelectPalette={selectPalette}
         onClose={() => setShowSystem(false)} />
@@ -692,10 +934,48 @@ function MainAppContent() {
   );
 }
 
+class AppErrorBoundary extends React.Component<{children: React.ReactNode}, {error: Error | null}> {
+  state = {error: null as Error | null};
+  static getDerivedStateFromError(error: Error) {
+    return {error};
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('AppErrorBoundary caught:', error, info?.componentStack);
+    }
+  }
+  reset = () => this.setState({error: null});
+  render() {
+    if (!this.state.error) return this.props.children;
+    const err = this.state.error as Error;
+    const msg = err?.message || String(err);
+    return (
+      <View style={{flex: 1, backgroundColor: '#0a0a0a', padding: 24, justifyContent: 'center', alignItems: 'center'}}>
+        <Text style={{color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 12, textAlign: 'center'}}>
+          {i18n.t('errorBoundary.title')}
+        </Text>
+        <Text style={{color: '#bbb', fontSize: 13, marginBottom: 24, textAlign: 'center'}}>
+          {i18n.t('errorBoundary.body')}
+        </Text>
+        <Text style={{color: '#666', fontSize: 11, marginBottom: 24, textAlign: 'center'}} numberOfLines={4}>
+          {msg}
+        </Text>
+        <TouchableOpacity onPress={this.reset} style={{paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8, backgroundColor: '#3a7bd5'}}>
+          <Text style={{color: '#fff', fontSize: 14, fontWeight: '600'}}>
+            {i18n.t('errorBoundary.retry')}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <MainAppContent />
+      <AppErrorBoundary>
+        <MainAppContent />
+      </AppErrorBoundary>
     </SafeAreaProvider>
   );
 }
@@ -704,10 +984,10 @@ const styles = StyleSheet.create({
   root: {flex: 1},
   loading: {flex: 1, alignItems: 'center', justifyContent: 'center'},
   splashLogo: {width: 200, height: 200},
-  splashName: {fontFamily: 'Georgia', fontSize: 22, fontStyle: 'italic', letterSpacing: 2, marginTop: 16},
+  splashName: {fontFamily: 'OpenDyslexic', fontSize: 22, fontStyle: 'italic', letterSpacing: 2, marginTop: 16},
   header: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1},
-  headerTitle: {fontFamily: 'Georgia', fontSize: 20, fontWeight: '600', fontStyle: 'italic', letterSpacing: 0.3},
-  headerRight: {flexDirection: 'row', alignItems: 'center'},
+  headerTitle: {fontFamily: 'OpenDyslexic', fontSize: 20, fontWeight: '600', fontStyle: 'italic', letterSpacing: 0.3},
+  headerRight: {flexDirection: 'row', alignItems: 'center', flexShrink: 0},
   settingsBtn: {padding: 4, marginLeft: 8},
   settingsIcon: {fontSize: 18},
   content: {flex: 1},

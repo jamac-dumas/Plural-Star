@@ -1,19 +1,8 @@
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import {Image} from 'react-native';
-
-let ImageEditor: any = null;
-try {
-  ImageEditor = require('@react-native-community/image-editor').default || require('@react-native-community/image-editor');
-} catch {
-  ImageEditor = null;
-}
 
 const AVATAR_DIR = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/ps_avatars`;
 const CHAT_MEDIA_DIR = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/ps_chat_media`;
 const BIO_IMAGE_DIR = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/ps_bio_images`;
-
-const BANNER_WIDTH = 900;
-const BANNER_HEIGHT = 300;
 
 const ensureDir = async (dir: string) => {
   const exists = await ReactNativeBlobUtil.fs.exists(dir);
@@ -44,33 +33,135 @@ export const saveBannerFromBase64 = async (memberId: string, base64: string): Pr
   return `file://${path}?t=${Date.now()}`;
 };
 
-export const saveAvatarFromUrl = async (memberId: string, url: string): Promise<string | undefined> => {
-  if (!url || !url.startsWith('http')) return undefined;
-  try {
-    await ensureDir(AVATAR_DIR);
-    const urlExt = url.split('?')[0].split('.').pop()?.toLowerCase() || '';
-    const ext = ['png', 'gif', 'webp'].includes(urlExt) ? urlExt : 'jpg';
-    const path = `${AVATAR_DIR}/${memberId}.${ext}`;
-    const result = await ReactNativeBlobUtil.config({path, fileCache: false}).fetch('GET', url);
-    if (result.info().status === 200) return `file://${path}?t=${Date.now()}`;
-    return undefined;
-  } catch { return undefined; }
-};
-
 const BANNER_DIR = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/ps_banners`;
 
-export const saveBannerFromUrl = async (memberId: string, url: string): Promise<string | undefined> => {
-  if (!url || !url.startsWith('http')) return undefined;
+const DOWNLOAD_TIMEOUT_MS = 7000;
+
+const downloadViaBlobUtil = async (
+  baseDir: string,
+  id: string,
+  url: string,
+): Promise<string | undefined> => {
   try {
-    await ensureDir(BANNER_DIR);
-    const urlExt = url.split('?')[0].split('.').pop()?.toLowerCase() || '';
-    const ext = ['png', 'gif', 'webp'].includes(urlExt) ? urlExt : 'jpg';
-    const path = `${BANNER_DIR}/${memberId}.${ext}`;
-    const result = await ReactNativeBlobUtil.config({path, fileCache: false}).fetch('GET', url);
-    if (result.info().status === 200) return `file://${path}?t=${Date.now()}`;
-    return undefined;
+    await ensureDir(baseDir);
+    const tempPath = `${baseDir}/${id}.tmp`;
+    try { if (await ReactNativeBlobUtil.fs.exists(tempPath)) await ReactNativeBlobUtil.fs.unlink(tempPath); } catch {}
+    const downloadTask = ReactNativeBlobUtil.config({
+      path: tempPath,
+      fileCache: false,
+      followRedirect: true,
+    }).fetch('GET', url, {
+      Accept: 'image/png,image/jpeg,image/webp,image/gif,image/*;q=0.8,*/*;q=0.5',
+      'User-Agent': 'PluralStar/1.9.2 (avatar-import)',
+    });
+    const result = await new Promise<any>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { (downloadTask as any).cancel?.(() => {}); } catch {}
+        reject(new Error(`image download timed out after ${DOWNLOAD_TIMEOUT_MS}ms`));
+      }, DOWNLOAD_TIMEOUT_MS);
+      downloadTask.then(
+        (v: any) => { if (settled) return; settled = true; clearTimeout(timer); resolve(v); },
+        (e: any) => { if (settled) return; settled = true; clearTimeout(timer); reject(e); },
+      );
+    });
+    const info = result.info() as any;
+    const status = info.status;
+    if (status < 200 || status >= 300) {
+      try { await ReactNativeBlobUtil.fs.unlink(tempPath); } catch {}
+      return undefined;
+    }
+    const headers = info.headers || {};
+    const contentType = String(
+      headers['Content-Type'] || headers['content-type'] || '',
+    ).toLowerCase();
+    let ext = '';
+    if (contentType.includes('png')) ext = 'png';
+    else if (contentType.includes('webp')) ext = 'webp';
+    else if (contentType.includes('gif')) ext = 'gif';
+    else if (contentType.includes('jpeg') || contentType.includes('jpg')) ext = 'jpg';
+    if (!ext) {
+      try {
+        const head = await ReactNativeBlobUtil.fs.readFile(tempPath, 'base64');
+        if (head.startsWith('iVBOR')) ext = 'png';
+        else if (head.startsWith('R0lGO')) ext = 'gif';
+        else if (head.startsWith('UklGR')) ext = 'webp';
+        else if (head.startsWith('/9j/')) ext = 'jpg';
+      } catch {}
+    }
+    if (!ext) {
+      const urlExt = url.split('?')[0].split('.').pop()?.toLowerCase() || '';
+      if (urlExt === 'jpeg') ext = 'jpg';
+      else if (['png', 'gif', 'webp', 'jpg'].includes(urlExt)) ext = urlExt;
+      else ext = 'jpg';
+    }
+    for (const oldExt of ['jpg', 'png', 'gif', 'webp']) {
+      const p = `${baseDir}/${id}.${oldExt}`;
+      try { if (await ReactNativeBlobUtil.fs.exists(p)) await ReactNativeBlobUtil.fs.unlink(p); } catch {}
+    }
+    const finalPath = `${baseDir}/${id}.${ext}`;
+    await ReactNativeBlobUtil.fs.cp(tempPath, finalPath);
+    try { await ReactNativeBlobUtil.fs.unlink(tempPath); } catch {}
+    return `file://${finalPath}?t=${Date.now()}`;
   } catch { return undefined; }
 };
+
+const downloadViaFetchFallback = async (
+  baseDir: string,
+  id: string,
+  url: string,
+): Promise<string | undefined> => {
+  try {
+    const res = await fetch(url, {headers: {Accept: 'image/png,image/jpeg,image/webp,image/gif,image/*;q=0.8,*/*;q=0.5'}});
+    if (!res.ok) return undefined;
+    const blob: any = await res.blob();
+    const dataUrl: string = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onloadend = () => resolve(String(fr.result || ''));
+      fr.onerror = reject;
+      fr.readAsDataURL(blob);
+    });
+    const comma = dataUrl.indexOf(',');
+    if (comma < 0) return undefined;
+    const raw = dataUrl.slice(comma + 1);
+    if (!raw) return undefined;
+    let ext = 'jpg';
+    if (raw.startsWith('iVBOR')) ext = 'png';
+    else if (raw.startsWith('R0lGO')) ext = 'gif';
+    else if (raw.startsWith('UklGR')) ext = 'webp';
+    await ensureDir(baseDir);
+    for (const oldExt of ['jpg', 'png', 'gif', 'webp']) {
+      const p = `${baseDir}/${id}.${oldExt}`;
+      try { if (await ReactNativeBlobUtil.fs.exists(p)) await ReactNativeBlobUtil.fs.unlink(p); } catch {}
+    }
+    const finalPath = `${baseDir}/${id}.${ext}`;
+    await ReactNativeBlobUtil.fs.writeFile(finalPath, raw, 'base64');
+    return `file://${finalPath}?t=${Date.now()}`;
+  } catch (e) {
+    console.error('[PS] avatar fetch fallback error:', e);
+    return undefined;
+  }
+};
+
+const downloadImageWithExtSniff = async (
+  baseDir: string,
+  id: string,
+  url: string,
+): Promise<string | undefined> => {
+  if (!url || !url.startsWith('http')) return undefined;
+  const primary = await downloadViaBlobUtil(baseDir, id, url);
+  if (primary) return primary;
+  console.log('[PS] avatar primary download failed, trying fallback:', url.slice(0, 80));
+  return downloadViaFetchFallback(baseDir, id, url);
+};
+
+export const saveAvatarFromUrl = (memberId: string, url: string): Promise<string | undefined> =>
+  downloadImageWithExtSniff(AVATAR_DIR, memberId, url);
+
+export const saveBannerFromUrl = (memberId: string, url: string): Promise<string | undefined> =>
+  downloadImageWithExtSniff(BANNER_DIR, memberId, url);
 
 export const deleteAvatar = async (memberId: string): Promise<void> => {
   try {
@@ -112,10 +203,12 @@ export const saveBioImage = async (
   return `file://${path}?t=${Date.now()}`;
 };
 
-const getImageSize = (uri: string): Promise<{width: number; height: number}> =>
-  new Promise((resolve, reject) => {
-    Image.getSize(uri, (width: number, height: number) => resolve({width, height}), reject);
-  });
+const persistImage = async (sourceUri: string, destPath: string): Promise<string> => {
+  const readPath = sourceUri.replace('file://', '');
+  const raw = await ReactNativeBlobUtil.fs.readFile(readPath, 'base64');
+  await ReactNativeBlobUtil.fs.writeFile(destPath, raw, 'base64');
+  return `file://${destPath}?t=${Date.now()}`;
+};
 
 export const saveBannerImage = async (
   imageId: string,
@@ -124,41 +217,73 @@ export const saveBannerImage = async (
   await ensureDir(BIO_IMAGE_DIR);
   const destPath = `${BIO_IMAGE_DIR}/${imageId}.png`;
   try { await ReactNativeBlobUtil.fs.unlink(destPath); } catch {}
-  try {
-    if (!ImageEditor || !ImageEditor.cropImage) throw new Error('ImageEditor unavailable');
-    const {width: srcW, height: srcH} = await getImageSize(sourceUri);
-    const targetAspect = BANNER_WIDTH / BANNER_HEIGHT;
-    const srcAspect = srcW / srcH;
-    let cropW: number, cropH: number, offsetX: number, offsetY: number;
-    if (srcAspect > targetAspect) {
-      cropH = srcH;
-      cropW = Math.round(srcH * targetAspect);
-      offsetX = Math.round((srcW - cropW) / 2);
-      offsetY = 0;
-    } else {
-      cropW = srcW;
-      cropH = Math.round(srcW / targetAspect);
-      offsetX = 0;
-      offsetY = Math.round((srcH - cropH) / 2);
-    }
-    const cropped = await ImageEditor.cropImage(sourceUri, {
-      offset: {x: offsetX, y: offsetY},
-      size: {width: cropW, height: cropH},
-      displaySize: {width: BANNER_WIDTH, height: BANNER_HEIGHT},
-      resizeMode: 'cover',
-      format: 'png',
-      quality: 0.9,
-    });
-    const croppedPath = (cropped as any).uri ? (cropped as any).uri.replace('file://', '') : String(cropped).replace('file://', '');
-    await ReactNativeBlobUtil.fs.cp(croppedPath, destPath);
-    try { await ReactNativeBlobUtil.fs.unlink(croppedPath); } catch {}
-    return `file://${destPath}?t=${Date.now()}`;
-  } catch {
-    const readPath = sourceUri.replace('file://', '');
-    const raw = await ReactNativeBlobUtil.fs.readFile(readPath, 'base64');
-    await ReactNativeBlobUtil.fs.writeFile(destPath, raw, 'base64');
-    return `file://${destPath}?t=${Date.now()}`;
+  return persistImage(sourceUri, destPath);
+};
+
+export const saveAvatarFromUri = async (memberId: string, sourceUri: string): Promise<string> => {
+  await ensureDir(AVATAR_DIR);
+  for (const ext of ['jpg', 'png', 'gif', 'webp']) {
+    const p = `${AVATAR_DIR}/${memberId}.${ext}`;
+    try { if (await ReactNativeBlobUtil.fs.exists(p)) await ReactNativeBlobUtil.fs.unlink(p); } catch {}
   }
+  return persistImage(sourceUri, `${AVATAR_DIR}/${memberId}.png`);
+};
+
+export const saveBioImageFromUri = async (imageId: string, sourceUri: string): Promise<string> => {
+  await ensureDir(BIO_IMAGE_DIR);
+  const destPath = `${BIO_IMAGE_DIR}/${imageId}.png`;
+  try { await ReactNativeBlobUtil.fs.unlink(destPath); } catch {}
+  return persistImage(sourceUri, destPath);
+};
+
+export const rebaseDocumentUri = (uri?: string | null): string | undefined => {
+  if (!uri || typeof uri !== 'string' || !uri.startsWith('file://')) return uri || undefined;
+  const docMarker = '/Documents/';
+  const idx = uri.indexOf(docMarker);
+  if (idx === -1) return uri;
+  const tail = uri.slice(idx + docMarker.length);
+  const currentBase = ReactNativeBlobUtil.fs.dirs.DocumentDir.replace(/\/+$/, '');
+  const rebased = `file://${currentBase}/${tail}`;
+  return rebased;
+};
+
+export const migrateStaleMediaPaths = async (
+  members: any[],
+  system: any | null,
+): Promise<{members: any[]; system: any | null; changed: boolean}> => {
+  let changed = false;
+  const fix = (uri?: string): string | undefined => {
+    const next = rebaseDocumentUri(uri);
+    if (next && next !== uri) changed = true;
+    return next;
+  };
+  const updatedMembers = (members || []).map((m: any) => {
+    if (!m) return m;
+    const newAvatar = fix(m.avatar);
+    const newBanner = fix(m.banner);
+    if (newAvatar === m.avatar && newBanner === m.banner) return m;
+    return {...m, avatar: newAvatar, banner: newBanner};
+  });
+  let updatedSystem = system;
+  if (system) {
+    const newAvatar = fix(system.avatar);
+    const newBanner = fix(system.banner);
+    if (newAvatar !== system.avatar || newBanner !== system.banner) {
+      updatedSystem = {...system, avatar: newAvatar, banner: newBanner};
+    }
+  }
+  return {members: updatedMembers, system: updatedSystem, changed};
+};
+
+export const rebaseChatMessageMedia = (messages: any[]): {messages: any[]; changed: boolean} => {
+  let changed = false;
+  const out = (messages || []).map((msg: any) => {
+    if (!msg || (msg.type !== 'image' && msg.type !== 'file')) return msg;
+    const next = rebaseDocumentUri(msg.content);
+    if (next && next !== msg.content) { changed = true; return {...msg, content: next}; }
+    return msg;
+  });
+  return {messages: out, changed};
 };
 
 export const migrateInlineAvatars = async (members: any[]): Promise<{members: any[]; changed: boolean}> => {

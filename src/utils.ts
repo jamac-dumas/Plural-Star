@@ -1,3 +1,4 @@
+import {Platform, Dimensions, PixelRatio} from 'react-native';
 import i18n from './i18n/i18n';
 import type {SupportedLanguage} from './i18n/i18n';
 
@@ -9,13 +10,60 @@ export interface SystemInfo {
   banner?: string;
 }
 
+export type GroupNodeKind = 'group' | 'subsystem';
+
 export interface MemberGroup {
   id: string;
   name: string;
   color?: string;
+  kind?: GroupNodeKind;
+  parentId?: string | null;
+  sortOrder?: number;
 }
 
-export type CustomFieldType = 'text' | 'markdown' | 'date' | 'dateRange' | 'number' | 'toggle' | 'color' | 'month' | 'year' | 'monthYear' | 'timestamp' | 'monthDay';
+export const groupKind = (g: MemberGroup): GroupNodeKind => g.kind || 'group';
+export const groupParent = (g: MemberGroup): string | null => g.parentId ?? null;
+
+export const childrenOf = (nodes: MemberGroup[], parentId: string | null): MemberGroup[] =>
+  nodes
+    .filter(n => groupParent(n) === parentId)
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name));
+
+export const descendantsOf = (nodes: MemberGroup[], id: string): MemberGroup[] => {
+  const out: MemberGroup[] = [];
+  const walk = (pid: string) => {
+    for (const n of nodes) {
+      if (groupParent(n) === pid) { out.push(n); walk(n.id); }
+    }
+  };
+  walk(id);
+  return out;
+};
+
+export const ancestorsOf = (nodes: MemberGroup[], id: string): MemberGroup[] => {
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const out: MemberGroup[] = [];
+  let cur = byId.get(id);
+  const seen = new Set<string>();
+  while (cur && groupParent(cur) != null) {
+    if (seen.has(cur.id)) break;
+    seen.add(cur.id);
+    const parent = byId.get(groupParent(cur)!);
+    if (!parent) break;
+    out.unshift(parent);
+    cur = parent;
+  }
+  return out;
+};
+
+export const isDescendant =(nodes: MemberGroup[], candidateId: string, ofId: string): boolean => {
+  if (candidateId === ofId) return true;
+  return descendantsOf(nodes, ofId).some(n => n.id === candidateId);
+};
+
+export const nodeDepth = (nodes: MemberGroup[], id: string): number => ancestorsOf(nodes, id).length;
+
+export type CustomFieldType = 'text' | 'markdown' | 'date' | 'dateRange' | 'number' | 'toggle' | 'color' | 'month' | 'year' | 'monthYear' | 'timestamp' | 'monthDay' | 'image';
 
 export interface CustomFieldDef {
   id: string;
@@ -69,12 +117,213 @@ export interface Member {
   groupIds?: string[];
   archived?: boolean;
   avatar?: string;
+  avatarTransparent?: boolean;
   banner?: string;
   customFields?: CustomFieldValue[];
   sortOrder?: number;
   createdAt?: number;
   sourceId?: string;
+  isCustomFront?: boolean;
 }
+
+export const DEFAULT_CUSTOM_FRONT_NAMES = ['Chatty', 'Non-Verbal', 'IWC', 'DNI', 'Blurry', 'Blendy', 'Rapid Switching', 'Foggy', 'Grounded', 'Dissociated', 'Anxious', 'Depressed', 'Cheerful', 'Happy', 'Sad', 'Crisis', 'Melancholy', 'Stimming', 'Stressed', 'Working', 'Traveling', 'Sleeping', 'Hyperfocus'];
+
+const CUSTOM_FRONT_COLORS = ['#DAA520', '#7B9FE8', '#E87BA8', '#7BE8C4', '#A87BE8', '#E8A87B', '#6EC9A9', '#E87B7B', '#85B4E8', '#C97BE8', '#B4E885', '#E8C97B'];
+
+export const makeDefaultCustomFronts = (): Member[] =>
+  DEFAULT_CUSTOM_FRONT_NAMES.map((name, i) => ({
+    id: uid(),
+    name,
+    pronouns: '',
+    role: '',
+    color: CUSTOM_FRONT_COLORS[i % CUSTOM_FRONT_COLORS.length],
+    description: '',
+    isCustomFront: true,
+    tags: [],
+    groupIds: [],
+  }));
+
+export interface RelationshipTypeDef {
+  id: string;
+  name: string;
+  inverseName?: string;
+  directional: boolean;
+  color?: string;
+  preset?: boolean;
+  overridden?: boolean;
+}
+
+export interface Medication {
+  id: string;
+  name: string;
+  dosage?: string;
+  times: string[];
+  enabled: boolean;
+  notes?: string;
+  createdAt: number;
+}
+
+export interface MedicalAppointment {
+  id: string;
+  title: string;
+  time: number;
+  location?: string;
+  notes?: string;
+  reminderMinutesBefore?: number;
+  createdAt: number;
+}
+
+export interface MedicalHistoryEntry {
+  id: string;
+  title: string;
+  date?: number;
+  notes?: string;
+  createdAt: number;
+}
+
+export interface EmergencyInfo {
+  conditions?: string;
+  allergies?: string;
+  bloodType?: string;
+  notes?: string;
+  showOnNotification: boolean;
+}
+
+export interface MedicalData {
+  medications: Medication[];
+  appointments: MedicalAppointment[];
+  history: MedicalHistoryEntry[];
+  emergency: EmergencyInfo;
+}
+
+export const DEFAULT_MEDICAL: MedicalData = {
+  medications: [],
+  appointments: [],
+  history: [],
+  emergency: {showOnNotification: false},
+};
+
+export const isValidTimeHHMM = (v: string): boolean =>
+  /^([01]?\d|2[0-3]):[0-5]\d$/.test(v.trim());
+
+// Convert a 12-hour entry ("9", "9:30") + meridiem to canonical 24h "HH:MM". Returns null if invalid.
+export const time12to24 = (raw: string, ampm: 'AM' | 'PM'): string | null => {
+  const m = /^(\d{1,2})(?::(\d{2}))?$/.exec((raw || '').trim());
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  if (h < 1 || h > 12 || min < 0 || min > 59) return null;
+  if (ampm === 'AM') { if (h === 12) h = 0; } else { if (h !== 12) h += 12; }
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+};
+
+// Format a canonical 24h "HH:MM" for display as 12-hour with meridiem, e.g. "9:00 PM".
+export const formatTime12 = (hhmm24: string): string => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec((hhmm24 || '').trim());
+  if (!m) return hhmm24;
+  let h = parseInt(m[1], 10);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12; if (h === 0) h = 12;
+  return `${h}:${m[2]} ${ampm}`;
+};
+
+export const emergencyNotificationLine = (e: EmergencyInfo | undefined): string | null => {
+  if (!e || !e.showOnNotification) return null;
+  const parts = [e.conditions, e.allergies, e.bloodType].map(x => (x || '').trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  return `⚕ ${parts.join(' · ')}`;
+};
+
+export interface DeviceCodes {
+  friendCode: string;
+  syncCode: string;
+  createdAt: number;
+}
+
+export const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+let codeState = 0;
+
+const seedCodeState = (): number => {
+  let h = 2166136261;
+  const mix = (n: number) => {
+    h = (h ^ (Math.floor(Math.abs(n)) & 0xffffffff)) >>> 0;
+    h = Math.imul(h, 16777619) >>> 0;
+  };
+  const screen = Dimensions.get('screen');
+  const perf = (globalThis as any)?.performance?.now?.() ?? 0;
+  mix(Date.now());
+  mix(perf * 1000);
+  mix(Math.random() * 0xffffffff);
+  mix(Math.random() * 0xffffffff);
+  mix(Math.random() * 0xffffffff);
+  mix(screen.width * 10000 + screen.height);
+  mix(PixelRatio.get() * 1000);
+  mix(new Date().getTimezoneOffset() + 720);
+  mix(Platform.OS === 'ios' ? 0x1f3 : 0x2e7);
+  mix(typeof Platform.Version === 'number' ? Platform.Version : `${Platform.Version}`.split('').reduce((a, c) => a + c.charCodeAt(0), 0));
+  return h >>> 0;
+};
+
+const nextCodeChar = (): string => {
+  if (codeState === 0) codeState = seedCodeState();
+  codeState = (codeState ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+  codeState = Math.imul(codeState ^ (codeState >>> 15), 2246822519) >>> 0;
+  codeState = Math.imul(codeState ^ (codeState >>> 13), 3266489917) >>> 0;
+  codeState = (codeState ^ (codeState >>> 16)) >>> 0;
+  return CODE_ALPHABET[codeState % CODE_ALPHABET.length];
+};
+
+const randomCodeGroup = (len: number): string => {
+  let out = '';
+  for (let i = 0; i < len; i++) out += nextCodeChar();
+  return out;
+};
+
+export const generateFriendCode = (): string =>
+  `${randomCodeGroup(4)}-${randomCodeGroup(4)}-${randomCodeGroup(4)}`;
+
+export const generateSyncCode = (): string =>
+  `${randomCodeGroup(5)}-${randomCodeGroup(5)}-${randomCodeGroup(5)}-${randomCodeGroup(5)}`;
+
+export const DEFAULT_REL_COLOR = '#8A94A6';
+
+export const RELATIONSHIP_COLOR_CHOICES = ['#E05B5B', '#5BBF7A', '#D9B84A', '#E87BA8'];
+
+export interface Relationship {
+  id: string;
+  fromId: string;
+  toId: string;
+  typeId: string;
+  note?: string;
+  createdAt: number;
+}
+
+export const PRESET_RELATIONSHIP_TYPES: RelationshipTypeDef[] = [
+  {id: 'love', name: 'Love', directional: false, color: '#E87BA8', preset: true},
+  {id: 'friend', name: 'Friend', directional: false, color: '#5BBF7A', preset: true},
+  {id: 'ally', name: 'Ally', directional: false, color: '#D9B84A', preset: true},
+  {id: 'rival', name: 'Rival', directional: false, color: '#E05B5B', preset: true},
+];
+
+export const allRelationshipTypes = (customTypes: RelationshipTypeDef[]): RelationshipTypeDef[] => {
+  const overrides = new Map(customTypes.filter(t => t.preset).map(t => [t.id, t]));
+  const presets = PRESET_RELATIONSHIP_TYPES.map(p => {
+    const o = overrides.get(p.id);
+    return o ? {...p, ...o, overridden: true} : p;
+  });
+  return [...presets, ...customTypes.filter(t => !t.preset)];
+};
+
+export const relationshipDegrees = (memberIds: string[], relationships: Relationship[]): Record<string, number> => {
+  const degrees: Record<string, number> = {};
+  for (const id of memberIds) degrees[id] = 0;
+  for (const r of relationships) {
+    if (degrees[r.fromId] !== undefined) degrees[r.fromId] += 1;
+    if (degrees[r.toId] !== undefined) degrees[r.toId] += 1;
+  }
+  return degrees;
+};
 
 export type HistoryChangeType = 'front' | 'mood' | 'location' | 'note';
 export type FrontTierKey = 'primary' | 'coFront' | 'coConscious';
@@ -123,6 +372,7 @@ export interface JournalEntry {
   hashtags: string[];
   password?: string;
   timestamp: number;
+  pinned?: boolean;
 }
 
 export interface JournalTemplate {
@@ -142,7 +392,15 @@ export interface ShareSettings {
 
 export type TextScale = 1.0 | 1.25 | 1.5;
 
+export type AccountMode = 'system' | 'singlet';
+
+export const SINGLET_HIDDEN_STATUS_NAMES = ['Blurry', 'Blendy', 'Rapid Switching', 'Dissociated'];
+export const singletStatuses = (members: Member[]): Member[] =>
+  members.filter(m => m.isCustomFront && !m.archived && !SINGLET_HIDDEN_STATUS_NAMES.includes(m.name));
+
 export interface AppSettings {
+  accountMode?: AccountMode;
+  selfMemberId?: string;
   locations: string[];
   customMoods: string[];
   lightMode: boolean;
@@ -150,6 +408,7 @@ export interface AppSettings {
   filesEnabled: boolean;
   language: SupportedLanguage;
   notificationsEnabled: boolean;
+  notificationRefreshMinutes?: number;
   activePaletteId: string;
   textScale: TextScale;
   memberSortMode?: MemberSortMode;
@@ -157,6 +416,9 @@ export interface AppSettings {
   noteboardNotifications?: boolean;
   appLockPassword?: string;
   useDyslexicFont?: boolean;
+  fontChoice?: import('./theme').FontChoice;
+  customFrontsSeeded?: boolean;
+  memberListFields?: {groups?: boolean; descriptions?: boolean; pronouns?: boolean; roles?: boolean};
 }
 
 export interface ExportPayload {
@@ -177,6 +439,11 @@ export interface ExportPayload {
   customFieldDefs?: CustomFieldDef[];
   noteboards?: NoteboardEntry[];
   polls?: MemberPoll[];
+  journalTemplates?: JournalTemplate[];
+  relationships?: Relationship[];
+  relationshipTypes?: RelationshipTypeDef[];
+  systemMapMembers?: string[];
+  medical?: MedicalData;
 }
 
 export type ChatMessageType = 'text' | 'image' | 'file' | 'reply' | 'reaction';
@@ -216,9 +483,10 @@ export const translateMood = (mood: string, t: (k: string) => string): string =>
   const parts = mood.split(',').map(s => s.trim()).filter(Boolean);
   if (parts.length === 0) return '';
   const translateOne = (one: string): string => {
-    if (DEFAULT_MOODS.includes(one)) {
-      const translated = t(`mood.${one}`);
-      return translated && translated !== `mood.${one}` ? translated : one;
+    const canon = DEFAULT_MOODS.find(d => d.toLowerCase() === one.toLowerCase());
+    if (canon) {
+      const translated = t(`mood.${canon}`);
+      return translated && translated !== `mood.${canon}` ? translated : canon;
     }
     return one;
   };
@@ -279,6 +547,22 @@ export const findOpenFrontInHistory = (history: HistoryEntry[]): FrontState | nu
   );
 
   return openFrontEntry ? historyEntryToFrontState(openFrontEntry) : null;
+};
+
+export const buildEffectiveEnd = (history: HistoryEntry[]): ((e: HistoryEntry) => number | null) => {
+  const starts = history
+    .filter(e => !e.changeType || e.changeType === 'front')
+    .map(e => e.startTime)
+    .sort((a, b) => a - b);
+  return (e: HistoryEntry): number | null => {
+    if (e.endTime != null) return e.endTime;
+    let lo = 0; let hi = starts.length - 1; let ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid] > e.startTime) { ans = mid; hi = mid - 1; } else { lo = mid + 1; }
+    }
+    return ans === -1 ? null : starts[ans];
+  };
 };
 
 export const isFrontEmpty = (f: FrontState | null): boolean =>
@@ -345,6 +629,20 @@ export const isValidHex = (hex: string): boolean =>
 
 export const normalizeHex = (input: string): string =>
   (input.startsWith('#') ? input : `#${input}`).toUpperCase();
+
+export const sortMembersBySearch = <T extends {name: string}>(items: T[], search: string): T[] => {
+  if (!search) return [...items].sort((a, b) => a.name.localeCompare(b.name));
+  const q = search.toLowerCase();
+  return [...items].sort((a, b) => {
+    const an = a.name.toLowerCase();
+    const bn = b.name.toLowerCase();
+    const aStarts = an.startsWith(q);
+    const bStarts = bn.startsWith(q);
+    if (aStarts && !bStarts) return -1;
+    if (!aStarts && bStarts) return 1;
+    return an.localeCompare(bn);
+  });
+};
 
 export const sortMembers = (members: Member[], mode: MemberSortMode = 'alphabetical'): Member[] => {
   const sorted = [...members];
