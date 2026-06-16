@@ -4,7 +4,7 @@ import {Text, TextInput} from '../components/AppText';
 import {useTranslation} from 'react-i18next';
 import {safePick, isPickerCancel, getPickedFilePath} from '../utils/safePicker';
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import {exportJSON, exportBundle, exportHTML, exportEmail, exportAllJournalJSON, exportAllJournalTxt, exportAllJournalMd, ExportCategories, readZipBundle, base64FromU8} from '../export/exportUtils';
+import {exportJSON, exportZipBundle, exportHTML, exportEmail, exportAllJournalJSON, exportAllJournalTxt, exportAllJournalMd, ExportCategories, readZipBundle, importZipBundle, base64FromU8} from '../export/exportUtils';
 import {store, KEYS, chatMsgKey, listRecoverableBackups, restoreFromBackup, RecoverableEntry} from '../storage';
 import {SystemInfo, Member, MemberGroup, FrontState, HistoryEntry, JournalEntry, ShareSettings, AppSettings, ExportPayload, CustomFieldDef, CustomFieldType, CustomFieldValue, ChatChannel, ChatMessage, MemberPoll, uid, allFrontMemberIds, findOpenFrontInHistory} from '../utils';
 
@@ -116,7 +116,7 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
   });
   const togExp = (k: keyof ExportCategories) => setExportSel(s => ({...s, [k]: !s[k]}));
 
-  const handleJSON = async () => {try {await exportBundle(system, members, history, journal, exportSel);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
+  const handleJSON = async () => {try {await exportZipBundle(system, members, history, journal, exportSel);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
   const handleHTML = async () => {try {await exportHTML(system, members, history, journal);} catch (e) {Alert.alert(t('share.exportFailed'), String(e));}};
   const handleEmail = () => {
     if (!emailAddr.trim() || !emailAddr.includes('@')) {Alert.alert(t('share.invalidEmail'), t('share.invalidEmailMsg')); return;}
@@ -154,11 +154,17 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
       const pickedPath = getPickedFilePath(res);
       const isZip = /\.zip$/i.test(res.name || '') || /\.zip$/i.test(pickedPath);
       if (isZip) {
-        let bundle: {files: Record<string, Uint8Array>; data: any | null} | null = null;
+        let bundle: {files: Record<string, Uint8Array>; data: any | null; manifest: any | null} | null = null;
         try { bundle = await readZipBundle(pickedPath); }
         catch { bundle = await readZipBundle(res.uri || pickedPath); }
         const bdata = bundle?.data;
-        if (!bdata || !(bdata._meta?.app === 'Plural Star' || bdata._meta?.app === 'Plural Space')) {
+        const manifestApp = bundle?.manifest?.app;
+        if (!bdata || !(
+          bdata._meta?.app === 'Plural Star'
+          || bdata._meta?.app === 'Plural Space'
+          || manifestApp === 'Plural Star'
+          || manifestApp === 'Plural Space'
+        )) {
           setRestoreError(t('share.bundleNotRecognized'));
           return;
         }
@@ -214,34 +220,17 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
         setRestoring(true);
         try {
           if (restoreIsBundle) {
-            const {files, data} = await readZipBundle(restorePath);
-            if (!data) throw new Error('Bundle is missing data.json');
+            const {data} = await importZipBundle(restorePath);
             if (restoreSel.system && data.system) await store.set(KEYS.system, data.system);
             if (restoreSel.members && Array.isArray(data.members)) {
-              let mem: any[] = data.members.map((m: any) => { const {avatar_media_path, banner_media_path, ...rest} = m; return rest; });
+              let mem: any[] = data.members;
               if (restoreSel.avatars) {
-                const withA = data.members.filter((m: any) => m.avatar_media_path && files[m.avatar_media_path]);
-                const map: Record<string, string> = {};
-                let done = 0;
-                setRestoreProgress(t('share.progressAvatars'));
-                for (const m of withA) {
-                  const uri = await saveAvatar(m.id, base64FromU8(files[m.avatar_media_path])).catch(() => null);
-                  if (uri) map[m.id] = uri;
-                  done++; setRestoreProgress(t('share.progressAvatarsN', {done, total: withA.length}));
-                }
-                mem = mem.map(m => map[m.id] ? {...m, avatar: map[m.id]} : m);
+                const avatarMap = await importBase64MemberMedia('avatar', data.avatars || {}, (memberId, raw) => saveAvatar(memberId, raw).catch(() => null), t('share.progressAvatars'), 'share.progressAvatarsN');
+                mem = mem.map(m => avatarMap[m.id] ? {...m, avatar: avatarMap[m.id]} : m);
               }
               if (restoreSel.banners) {
-                const withB = data.members.filter((m: any) => m.banner_media_path && files[m.banner_media_path]);
-                const map: Record<string, string> = {};
-                let done = 0;
-                setRestoreProgress(t('share.progressBanners'));
-                for (const m of withB) {
-                  const uri = await saveBannerFromBase64(m.id, base64FromU8(files[m.banner_media_path])).catch(() => null);
-                  if (uri) map[m.id] = uri;
-                  done++; setRestoreProgress(t('share.progressBannersN', {done, total: withB.length}));
-                }
-                mem = mem.map(m => map[m.id] ? {...m, banner: map[m.id]} : m);
+                const bannerMap = await importBase64MemberMedia('banner', data.banners || {}, (memberId, raw) => saveBannerFromBase64(memberId, raw).catch(() => null), t('share.progressBanners'), 'share.progressBannersN');
+                mem = mem.map(m => bannerMap[m.id] ? {...m, banner: bannerMap[m.id]} : m);
               }
               setRestoreProgress(t('share.progressSavingMembers'));
               await store.set(KEYS.members, mem);
