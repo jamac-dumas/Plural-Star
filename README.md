@@ -140,11 +140,42 @@ Download Plural Star from the [App Store](https://apps.apple.com/in/app/plural-s
 ## Build from Source
 
 ```bash
-# Requirements: Node 22+, JDK 17, Android SDK
-git clone https://github.com/TheHanyou/Plural-Star.git
+# Requirements:
+# - Node 22+
+# - JDK 17
+# - Android SDK for Android builds
+# - Xcode, Ruby 3.4+, and CocoaPods for iOS builds
+git clone https://github.com/ByHanyou/Plural-Star.git
 cd Plural-Star
 npm install --legacy-peer-deps
-cd android && gradlew.bat assembleRelease
+```
+
+**Android release APK**
+
+```bash
+cd android
+bash ./gradlew assembleRelease
+```
+
+**iOS simulator/dev build**
+
+```bash
+bundle install
+cd ios
+bundle exec pod install
+cd ..
+npm run ios
+```
+
+**iOS release build from the command line**
+
+```bash
+xcodebuild \
+  -workspace ios/PluralSpace.xcworkspace \
+  -scheme PluralSpace \
+  -configuration Release \
+  -sdk iphoneos \
+  build
 ```
 
 ## Wiki
