@@ -1,6 +1,6 @@
 {
   "name": "PluralStar",
-  "version": "1.10.3",
+  "version": "1.11.0",
   "private": true,
   "scripts": {
     "android": "node scripts/run-android.js",
