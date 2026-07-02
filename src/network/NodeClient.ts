@@ -14,19 +14,15 @@ export interface PacketReceived {
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
-// RN fetch has NO default timeout: a request to an unreachable relay can hang
-// for minutes, which froze the UI (busy state never cleared — dead Enable
-// toggle, "hitting enter does nothing"). Every HTTP call gets a hard cap.
+// Timeouts use Promise.race, NOT AbortController/signal — RN's AbortController
+// is unreliable on device and passing a signal breaks fetch outright.
 const FETCH_TIMEOUT_MS = 15000;
 
-const fetchWithTimeout = async (url: string, init?: RequestInit): Promise<Response> => {
-  const ctrl = new AbortController();
-  const tm = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...(init || {}), signal: ctrl.signal });
-  } finally {
-    clearTimeout(tm);
-  }
+const fetchWithTimeout = (url: string, init?: any): Promise<any> => {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('request timed out')), FETCH_TIMEOUT_MS),
+  );
+  return Promise.race([fetch(url, init), timeout]);
 };
 
 export class NodeClient {

@@ -722,11 +722,6 @@ export const ShareScreen = ({theme: T, system, members, front, history, journal,
 
   const normHex = (c: any): string => { const s = String(c || '').trim(); return s.startsWith('#') ? s : (s ? `#${s}` : '#DAA520'); };
 
-  // Re-importing a member is an explicit "I want this member back": if the local
-  // match is a soft-delete tombstone (deleted + archived, kept for history/stats),
-  // revive it. Without this, deleting members and then re-importing left them
-  // invisible forever — the tombstone flags survived every merge, and only a
-  // full wipe + reimport appeared to "fix" it.
   const reviveIfTombstoned = (em: Member, incoming: Partial<Member>): Partial<Member> =>
     em.deleted ? { deleted: false, archived: incoming.archived ?? false } : {};
 

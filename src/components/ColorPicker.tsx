@@ -43,13 +43,6 @@ const hsvToHex = (h: number, s: number, v: number) => {
 };
 const hexToHsv = (hex: string) => { const {r, g, b} = hexToRgb(hex); return rgbToHsv(r, g, b); };
 
-// Real native gradients (react-native-linear-gradient, already a dependency) —
-// replaces the old stacked-View strip hack, which rendered seams/banding and
-// pushed ~110 Views through Fabric. GPU-drawn, pixel-smooth, two Views total.
-
-// Saturation/value square for a fixed hue: white→hue left-to-right, then a
-// transparent→black overlay top-to-bottom. Memoized on the hue hex, so it
-// re-renders on hue changes only — never on drag frames within the square.
 const SatValGradient = memo(({hueHex}: {hueHex: string}) => (
   <View pointerEvents="none" style={{position: 'absolute', left: 0, top: 0, right: 0, bottom: 0}}>
     <LinearGradient colors={['#FFFFFF', hueHex]} start={{x: 0, y: 0.5}} end={{x: 1, y: 0.5}} style={{flex: 1}} />
@@ -57,8 +50,6 @@ const SatValGradient = memo(({hueHex}: {hueHex: string}) => (
   </View>
 ));
 
-// Hue bar: the six primary/secondary stops wrap red→red; the native gradient
-// interpolates everything between. Static — never re-renders.
 const HUE_STOPS = ['#FF0000', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#FF00FF', '#FF0000'];
 const HueGradient = memo(() => (
   <LinearGradient

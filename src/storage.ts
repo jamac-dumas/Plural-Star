@@ -105,9 +105,6 @@ export const listRecoverableBackups = async (): Promise<RecoverableEntry[]> => {
   }
 };
 
-// True when AsyncStorage holds NONE of the app's keys while file backups exist —
-// the signature of a blank/failed storage load (reboot before flush, force-quit,
-// update migration), NOT a fresh install. A fresh install has no backups.
 export const storageLooksWiped = async (): Promise<boolean> => {
   let psKeys: string[] = [];
   let readFailed = false;
@@ -127,7 +124,6 @@ export const storageLooksWiped = async (): Promise<boolean> => {
   }
 };
 
-// Push every file backup back into AsyncStorage. Returns how many keys landed.
 export const restoreAllBackups = async (): Promise<number> => {
   let restored = 0;
   try {

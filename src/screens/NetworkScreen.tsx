@@ -49,8 +49,6 @@ export const NetworkScreen = ({theme: T}: Props) => {
     if (accepted > prevAccepted.current) AccessibilityInfo.announceForAccessibility(t('network.connected'));
     prevAccepted.current = accepted;
   }, [net.friends, net.devices, t]);
-  // Announce when an initial device copy finishes (event, not state-diffing —
-  // a role mismatch also clears the pending flag and must NOT announce success).
   useEffect(() => NetworkManager.onSyncCloneDone(() => {
     AccessibilityInfo.announceForAccessibility(t('network.syncCloneDone'));
   }), [t]);
@@ -97,8 +95,6 @@ export const NetworkScreen = ({theme: T}: Props) => {
     try {
       await NetworkManager.generateCode(kind);
     } catch {
-      // Registration failed (offline / relay unreachable): no code was shown,
-      // so nobody can share a dead one. Tell the user why.
       throw new Error(t('network.publishFailed'));
     }
   });
@@ -129,9 +125,6 @@ export const NetworkScreen = ({theme: T}: Props) => {
   const onEnter = (kind: Kind, value: string, clear: () => void) => {
     if (!value.trim()) return;
     if (kind === 'device') {
-      // The initial copy is directed: the user must say which device's data
-      // survives. Pick "send" on the device that has your data, "receive" on
-      // the one being set up. After that first copy, sync runs both ways.
       Alert.alert(
         t('network.syncDirectionTitle'),
         t('network.syncDirectionMsg'),
@@ -238,8 +231,6 @@ export const NetworkScreen = ({theme: T}: Props) => {
   const deviceStatusText = (f: Friend): string => {
     if (f.status === 'entered_theirs') return t('network.waitingThem');
     if (f.status === 'entered_mine') return t('network.waitingYou');
-    // Mid initial copy: say so (and which direction) instead of just "online" —
-    // the user shouldn't wonder why the target still shows old data.
     if (f.initPending) {
       return f.initRole === 'source' ? t('network.syncCloneSending') : t('network.syncCloneReceiving');
     }

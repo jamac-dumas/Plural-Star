@@ -88,10 +88,6 @@ function MainAppContent() {
 
   const [loaded, setLoaded] = useState(false);
   const [firstRun, setFirstRun] = useState(false);
-  // True when the last loadAll couldn't trust what it read (blank store that
-  // couldn't be restored, or a thrown load). While set: nothing persists, and
-  // coming back to the foreground re-runs loadAll — the storage that was
-  // unreadable at (background) launch is usually readable by then.
   const storageSuspectRef = useRef(false);
   const [locked, setLocked] = useState(false);
   const [tab, setTab] = useState<Tab>('front');
@@ -177,12 +173,6 @@ function MainAppContent() {
   }, []);
 
   const loadAll = useCallback(async () => {
-    // Blank-store guard (any platform): if AsyncStorage has NONE of our keys but
-    // file backups exist, this is a failed load after a reboot/force-quit/update
-    // — not a fresh install. Restore the backups BEFORE reading. If even the
-    // restore can't land, mark the load suspect: render what we have but never
-    // persist anything and never enter first-run, so one bad boot can't turn
-    // into a real wipe (the reseed below used to overwrite members + backups).
     let storageSuspect = false;
     try {
       if (await storageLooksWiped()) {
@@ -237,10 +227,6 @@ function MainAppContent() {
         console.error('[PS] media path rebase error:', e);
       }
       let loadedSettingsObj: AppSettings = {...DEFAULT_SETTINGS, ...(settings || {})};
-      // NEVER reseed off a suspect load: when the settings read comes back blank
-      // on a bad boot, this block used to see customFrontsSeeded=false and write
-      // preset-only members over BOTH stores — turning a transient blank read
-      // into a real wipe. Reseeding can always wait for the next healthy boot.
       if (!loadedSettingsObj.customFrontsSeeded && !storageSuspect) {
         loadedMembers = [...loadedMembers, ...makeDefaultCustomFronts()];
         loadedSettingsObj = {...loadedSettingsObj, customFrontsSeeded: true};
@@ -261,9 +247,6 @@ function MainAppContent() {
           if (!storageSuspect) await store.set(KEYS.system, recovered);
           setSystem(recovered);
         } else if (storageSuspect) {
-          // Blank read we couldn't verify: DON'T greet the user with Setup as if
-          // their data were gone. Show an empty (but non-destructive) state; the
-          // foreground re-load below retries as soon as storage is readable.
           console.warn('[STARTUP] Blank load with suspect storage — staying OUT of first-run; will retry on foreground.');
           setSystem({name: '', description: ''});
         } else {
@@ -328,8 +311,6 @@ function MainAppContent() {
       if (savedLang) changeLanguage(savedLang as SupportedLanguage);
     } catch (e) {
       console.error('[PS] startup load error:', e);
-      // A load that THREW is a suspect load: render best-effort, persist nothing,
-      // retry on foreground.
       storageSuspectRef.current = true;
       // A transient load error must NOT look like a wipe. Try a focused recovery of
       // the user's members/system (store.get self-heals from the file backup) before
@@ -358,7 +339,6 @@ function MainAppContent() {
         console.warn(`[STARTUP] load error but ${realCount} members recovered — reconstructed system instead of first-run.`);
       } else {
         setSystem({name: '', description: ''});
-        // Never enter Setup off a failed load — the foreground retry decides.
         console.warn('[STARTUP] load error with nothing recovered — staying OUT of first-run; will retry on foreground.');
       }
     } finally {
@@ -420,11 +400,6 @@ function MainAppContent() {
   };
 
   useEffect(() => { loadAll(); }, []);
-  // If the launch load was suspect (typical: the OS woke the app in the
-  // background after a reboot, before its storage was readable — a notification
-  // wake does exactly this), re-run the load the moment the app actually comes
-  // to the foreground. This is the "restart the app fixed it" fix, minus the
-  // restart. No-op when the last load was healthy.
   useEffect(() => {
     const sub = AppState.addEventListener('change', s => {
       if (s === 'active' && storageSuspectRef.current) {
@@ -451,7 +426,6 @@ function MainAppContent() {
       ],
     );
   }), [t]);
-  // Both devices picked the same clone direction — the initial copy was skipped.
   useEffect(() => NetworkManager.onSyncRoleMismatch(c => {
     Alert.alert(
       t('network.syncRoleMismatchTitle', {defaultValue: 'Sync setup mismatch'}),
@@ -531,7 +505,7 @@ function MainAppContent() {
           const member = members.find(m => m.id === memberId);
           if (!member) continue;
           const lastSeenTs = lastSeen[memberId] || 0;
-          const unread = allNotes.filter(n => n.memberId === memberId && n.timestamp > lastSeenTs);
+          const unread = allNotes.filter(n => n.memberId === memberId && !n.read && n.timestamp > lastSeenTs);
           if (unread.length > 0) {
             entries.push({memberName: member.name, unreadCount: unread.length});
           }
