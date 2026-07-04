@@ -6,7 +6,7 @@ import {useTranslation} from 'react-i18next';
 import {fmtDur, fmtTime} from '../utils';
 import {useNetwork} from '../network/useNetwork';
 import {NetworkManager} from '../network/NetworkManager';
-import {Friend} from '../network/types';
+import {Friend, MAX_NOTIF_FRIENDS} from '../network/types';
 
 interface Props {
   theme: any;
@@ -247,6 +247,17 @@ export const NetworkScreen = ({theme: T}: Props) => {
           <Text style={{fontSize: fs(14), fontWeight: '600', color: online || f.status !== 'accepted' ? T.text : T.muted}} numberOfLines={1} importantForAccessibility="no">{f.displayName}</Text>
           <View importantForAccessibility="no">{statusNode}</View>
         </View>
+        {f.kind !== 'device' && f.status === 'accepted' && (() => {
+          const atCap = !f.showInNotification && net.friends.filter(x => x.showInNotification).length >= MAX_NOTIF_FRIENDS;
+          return (
+            <TouchableOpacity onPress={() => { if (!atCap) NetworkManager.setFriendShowInNotification(f.peerId, !f.showInNotification); }} activeOpacity={0.7}
+              accessibilityRole="switch" accessibilityState={{checked: !!f.showInNotification, disabled: atCap}}
+              accessibilityLabel={`${t('network.showInNotif')}, ${f.displayName}`}
+              style={{padding: 10, opacity: atCap ? 0.35 : 1}} hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+              <Text style={{color: f.showInNotification ? T.accent : T.dim, fontSize: fs(15)}} importantForAccessibility="no">{f.showInNotification ? '🔔' : '🔕'}</Text>
+            </TouchableOpacity>
+          );
+        })()}
         <TouchableOpacity onPress={() => onRemove(f)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={`${t('network.remove')}, ${f.displayName}`} style={{padding: 10}} hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
           <Text style={{color: T.dim, fontSize: fs(16)}} importantForAccessibility="no">✕</Text>
         </TouchableOpacity>

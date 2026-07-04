@@ -814,6 +814,7 @@
     "statusIncoming": "Vil koble til",
     "online": "Tilkoblet",
     "offline": "Frakoblet",
+    "showInNotif": "Vis i varselet",
     "accept": "Godta",
     "remove": "Fjern",
     "ownCode": "Det er din egen vennekode.",

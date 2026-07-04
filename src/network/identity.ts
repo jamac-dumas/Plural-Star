@@ -73,6 +73,7 @@ export const loadOrCreateIdentity = async (): Promise<Identity> => {
   if (stored && stored.edSecretKey && stored.boxSecretKey) {
     try {
       cached = fromStored(stored);
+      store.set(IDENTITY_STORAGE_KEY, stored).catch(() => {});
       return cached;
     } catch (e) {
       console.error('[NETWORK] stored identity unreadable, regenerating:', e);

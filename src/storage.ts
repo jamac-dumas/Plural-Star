@@ -30,6 +30,7 @@ const CRITICAL_KEYS = new Set([
   KEYS.system, KEYS.members, KEYS.front, KEYS.history,
   KEYS.journal, KEYS.groups, KEYS.chatChannels, KEYS.relationships,
   KEYS.deviceCodes, KEYS.medical,
+  'ps:networkIdentity', 'ps:networkFriends', 'ps:networkSettings',
 ]);
 
 const STORAGE_DEBUG = __DEV__;

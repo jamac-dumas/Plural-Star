@@ -412,7 +412,7 @@ function MainAppContent() {
     return () => sub.remove();
   }, [loadAll]);
   useEffect(() => { NetworkManager.init().catch(e => console.error('[NETWORK] init failed:', e)); }, []);
-  useEffect(() => { NetworkManager.updateMyFront(front, members).catch(() => {}); }, [front, members]);
+  useEffect(() => { if (loaded) NetworkManager.updateMyFront(front, members).catch(() => {}); }, [loaded, front, members]);
   // Poke the sync engine when any synced data changes (it debounces + rate-limits).
   useEffect(() => { NetworkManager.notifyDataChanged(); }, [system, members, history, journal, journalTemplates, groups, palettes, chatChannels, medical, appSettings]);
   // Apply incoming device-sync writes by reloading app state.
@@ -445,6 +445,20 @@ function MainAppContent() {
   useEffect(() => {
     if (appSettings.notificationsEnabled) { showFrontNotification(front, members, system.name).catch(e => console.error('[PS] notif error:', e)); }
     else { clearFrontNotification().catch(e => console.error('[PS] clear notif error:', e)); }
+  }, [front, members, appSettings.notificationsEnabled, system.name]);
+
+  useEffect(() => {
+    let last: string | null = null;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const unsub = NetworkManager.subscribe(s => {
+      const sig = `${s.enabled}|${s.friends.filter(f => f.showInNotification && f.status === 'accepted').map(f => `${f.peerId}:${f.statusUpdatedAt || 0}`).join(',')}`;
+      if (last !== null && sig !== last && appSettings.notificationsEnabled) {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => { showFrontNotification(front, members, system.name).catch(() => {}); }, 2000);
+      }
+      last = sig;
+    });
+    return () => { if (debounce) clearTimeout(debounce); unsub(); };
   }, [front, members, appSettings.notificationsEnabled, system.name]);
 
   useEffect(() => {

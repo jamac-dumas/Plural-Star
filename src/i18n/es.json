@@ -814,6 +814,7 @@
     "statusIncoming": "Quiere conectar",
     "online": "En línea",
     "offline": "Sin conexión",
+    "showInNotif": "Mostrar en la notificación",
     "accept": "Aceptar",
     "remove": "Eliminar",
     "ownCode": "Ese es tu propio código de amistad.",

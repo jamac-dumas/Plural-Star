@@ -814,6 +814,7 @@
     "statusIncoming": "接続を希望しています",
     "online": "オンライン",
     "offline": "オフライン",
+    "showInNotif": "通知に表示",
     "accept": "承認",
     "remove": "削除",
     "ownCode": "それはあなた自身のフレンドコードです。",

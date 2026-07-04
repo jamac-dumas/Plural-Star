@@ -807,6 +807,7 @@
     "statusIncoming": "Mahu bersambung",
     "online": "Dalam talian",
     "offline": "Luar talian",
+    "showInNotif": "Tunjukkan dalam pemberitahuan",
     "accept": "Terima",
     "remove": "Buang",
     "ownCode": "Itu kod rakan anda sendiri.",
@@ -848,6 +849,23 @@
     "syncCloneReceiving": "Menerima salinan pertama…",
     "syncCloneDone": "Salinan pertama selesai",
     "publishFailed": "Kod anda tidak dapat diterbitkan — semak sambungan anda dan cuba lagi."
+  },
+  "mailbox": {
+    "title": "Peti mel",
+    "compose": "Karang",
+    "from": "Daripada",
+    "to": "Kepada",
+    "send": "Hantar",
+    "messagePlaceholder": "Tulis mesej…",
+    "empty": "Belum ada mel. Ketik Karang untuk menghantar mesej antara ahli.",
+    "emptyInbox": "Belum ada mesej dalam peti mel ini.",
+    "inboxOf": "Peti mel {{name}}",
+    "replyFrom": "Hantar kepada {{name}} sebagai:",
+    "messageCount": "{{count}} mesej",
+    "messageCount_other": "{{count}} mesej",
+    "unreadCount": "{{count}} belum dibaca",
+    "deleteTitle": "Padam mesej",
+    "deleteMsg": "Buang mesej ini? Tindakan ini tidak boleh dibuat asal."
   },
   "systemMap": {
     "connections": "Sambungan",

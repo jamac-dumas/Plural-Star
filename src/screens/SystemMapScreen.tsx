@@ -1,7 +1,7 @@
 import React, {useState, useEffect, useMemo, useCallback, useRef} from 'react';
-import {View, ScrollView, TouchableOpacity, Alert, Animated, PanResponder, KeyboardAvoidingView, StyleSheet} from 'react-native';
+import {View, ScrollView, TouchableOpacity, Alert, Animated, PanResponder, StyleSheet, useWindowDimensions} from 'react-native';
 import {Text, TextInput} from '../components/AppText';
-import {useKeyboardBehavior} from '../hooks/useKeyboardBehavior';
+import {useKeyboardHeight} from '../hooks/useKeyboardHeight';
 import {useTranslation} from 'react-i18next';
 import {Member, Relationship, RelationshipTypeDef, allRelationshipTypes, relationshipDegrees, uid, sortMembersBySearch, DEFAULT_REL_COLOR, RELATIONSHIP_COLOR_CHOICES, PRESET_RELATIONSHIP_TYPES, isValidHex, normalizeHex} from '../utils';
 import {PALETTE} from '../theme';
@@ -233,7 +233,9 @@ const TypeForm = ({T, initial, saveLabel, onSave}: {
 export const SystemMapScreen = ({theme: T, members, onViewMember, onRelCountChange, focus}: Props) => {
   const {t} = useTranslation();
   const fs = (s: number) => Math.round(s * (T.textScale || 1));
-  const behavior = useKeyboardBehavior();
+  const kb = useKeyboardHeight();
+  const winH = useWindowDimensions().height;
+  const editorScrollRef = useRef<ScrollView>(null);
   const eligibleMembers = useMemo(() => members.filter(m => !m.isCustomFront && !m.archived), [members]);
   const [mapIds, setMapIds] = useState<string[]>([]);
   const mapIdSet = useMemo(() => new Set(mapIds), [mapIds]);
@@ -735,9 +737,9 @@ export const SystemMapScreen = ({theme: T, members, onViewMember, onRelCountChan
       )}
 
       {showEditor && (
-        <KeyboardAvoidingView behavior={behavior} style={{...StyleSheet.absoluteFill, backgroundColor: '#00000088', justifyContent: 'flex-end'}}>
-          <View style={{backgroundColor: T.bg, borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: T.border, maxHeight: '88%'}}>
-            <ScrollView contentContainerStyle={{padding: 16, paddingBottom: 28}} keyboardShouldPersistTaps="handled">
+        <View style={{...StyleSheet.absoluteFill, backgroundColor: '#00000088', justifyContent: 'flex-end', paddingBottom: kb}}>
+          <View style={{backgroundColor: T.bg, borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: T.border, maxHeight: Math.min(winH * 0.88, winH - kb - 16)}}>
+            <ScrollView ref={editorScrollRef} contentContainerStyle={{padding: 16, paddingBottom: 28}} keyboardShouldPersistTaps="handled">
               <Text accessibilityRole="header" style={{fontSize: fs(17), fontWeight: '600', color: T.text, marginBottom: 14}}>
                 {editRel ? t('systemMap.editRelationship') : t('systemMap.addRelationship')}
               </Text>
@@ -792,6 +794,7 @@ export const SystemMapScreen = ({theme: T, members, onViewMember, onRelCountChan
 
               <Text style={{fontSize: fs(10), letterSpacing: 1, textTransform: 'uppercase', color: T.dim, marginBottom: 6, fontWeight: '600'}}>{t('modal.note')}</Text>
               <TextInput value={relNote} onChangeText={setRelNote} placeholder={t('systemMap.notePlaceholder')} placeholderTextColor={T.muted} multiline
+                onFocus={() => setTimeout(() => editorScrollRef.current?.scrollToEnd({animated: true}), 80)}
                 style={{backgroundColor: T.surface, color: T.text, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9, fontSize: fs(13), minHeight: 60, textAlignVertical: 'top', marginBottom: 16}} />
 
               <View style={{flexDirection: 'row', gap: 10}}>
@@ -812,12 +815,12 @@ export const SystemMapScreen = ({theme: T, members, onViewMember, onRelCountChan
               </View>
             </ScrollView>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       )}
 
       {showConnections && (
-        <KeyboardAvoidingView behavior={behavior} style={{...StyleSheet.absoluteFill, backgroundColor: '#00000088', justifyContent: 'flex-end'}}>
-          <View style={{backgroundColor: T.bg, borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: T.border, maxHeight: '88%'}}>
+        <View style={{...StyleSheet.absoluteFill, backgroundColor: '#00000088', justifyContent: 'flex-end', paddingBottom: kb}}>
+          <View style={{backgroundColor: T.bg, borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: T.border, maxHeight: Math.min(winH * 0.88, winH - kb - 16)}}>
             <View style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 4}}>
               <Text accessibilityRole="header" style={{flex: 1, fontSize: fs(17), fontWeight: '600', color: T.text}}>{t('systemMap.connections')}</Text>
               <TouchableOpacity onPress={() => {setShowConnections(false); setShowAddType(false); setEditTypeId(null);}} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('common.close')} style={{padding: 4}}>
@@ -906,12 +909,12 @@ export const SystemMapScreen = ({theme: T, members, onViewMember, onRelCountChan
               </View>
             </ScrollView>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       )}
 
       {showMemberPicker && (
-        <KeyboardAvoidingView behavior={behavior} style={{...StyleSheet.absoluteFill, backgroundColor: '#00000088', justifyContent: 'flex-end'}}>
-          <View style={{backgroundColor: T.bg, borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: T.border, maxHeight: '75%'}}>
+        <View style={{...StyleSheet.absoluteFill, backgroundColor: '#00000088', justifyContent: 'flex-end', paddingBottom: kb}}>
+          <View style={{backgroundColor: T.bg, borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: T.border, maxHeight: Math.min(winH * 0.75, winH - kb - 16)}}>
             <View style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8}}>
               <Text accessibilityRole="header" style={{flex: 1, fontSize: fs(17), fontWeight: '600', color: T.text}}>{t('members.addMember')}</Text>
               <TouchableOpacity onPress={() => setShowMemberPicker(false)} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t('common.close')} style={{padding: 4}}>
@@ -955,7 +958,7 @@ export const SystemMapScreen = ({theme: T, members, onViewMember, onRelCountChan
               })()}
             </ScrollView>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       )}
     </View>
   );

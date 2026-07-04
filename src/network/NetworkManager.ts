@@ -21,15 +21,17 @@ import {
   FriendIdentity,
   loadOrCreateIdentity,
 } from './identity';
+import nacl from 'tweetnacl';
 import { NodeClient, PacketReceived } from './NodeClient';
 import { sealMessage, openMessage } from './crypto';
-import { resolveNetwork } from './defaultNetwork';
+import { resolveNetwork, DEFAULT_GATEWAY_URL } from './defaultNetwork';
+import { getFriendsPushToken, endFriendsActivity } from '../services/LiveActivityService';
 import {
   rendezvousNamespace,
   makeRendezvousRecord,
   openRendezvousRecord,
 } from './rendezvous';
-import { decodeBase64, encodeBase64 } from './bytes';
+import { decodeBase64, encodeBase64, decodeUTF8 } from './bytes';
 import { generateFriendCode, generateSyncCode, Member } from '../utils';
 import { buildFrontShare } from './frontShare';
 import {
@@ -43,6 +45,7 @@ import {
   NETWORK_SETTINGS_KEY,
   SYNC_EXCLUDE_KEYS,
   SYNC_STATE_KEY,
+  MAX_NOTIF_FRIENDS,
 } from './types';
 
 // Live-sync tuning. A large initial sync must trickle out, not fire all at once:
@@ -83,6 +86,13 @@ const contentHash = (s: string): string => {
   }
   return (h >>> 0).toString(16);
 };
+
+const canonicalForSync = (s: string): string =>
+  s
+    .replace(/file:\/\/[^"\\]*\/Documents\//g, 'file:///Documents/')
+    .replace(/(file:[^"\\]*?)\?t=\d+/g, '$1');
+
+const syncHash = (s: string): string => contentHash(canonicalForSync(s));
 
 export interface NetworkState {
   enabled: boolean;
@@ -126,6 +136,7 @@ class NetworkManagerImpl {
   private codeTimers: { friend: ReturnType<typeof setTimeout> | null; device: ReturnType<typeof setTimeout> | null } = { friend: null, device: null };
   private systemName = 'Plural Star user';
   private myFront: FrontShare | null = null;
+  private myFrontKnown = false;
 
   // ---- sync engine state ----
   private lastHashes: Record<string, string> = {};
@@ -197,6 +208,8 @@ class NetworkManagerImpl {
       enabled: false,
     };
     this.friends = (await store.get<Friend[]>(FRIENDS_STORAGE_KEY, null)) || [];
+    if (this.friends.length > 0) this.persistFriends().catch(() => {});
+    this.persistSettings().catch(() => {});
     this.expireStaleClones();
     this.lastHashes = (await store.get<Record<string, string>>(SYNC_STATE_KEY, null)) || {};
     this.identity = await loadOrCreateIdentity();
@@ -205,8 +218,12 @@ class NetworkManagerImpl {
       if (sys && sys.name) this.systemName = sys.name;
     } catch {}
     AppState.addEventListener('change', s => {
-      if (s === 'active' && this.settings.enabled && this.client) this.client.ensureConnected();
+      if (s === 'active') {
+        this.expireStaleClones();
+        if (this.settings.enabled && this.client) this.client.ensureConnected();
+      }
     });
+    setInterval(() => this.expireStaleClones(), 60 * 1000);
     if (this.settings.enabled) await this.connect();
     else this.notify();
   }
@@ -239,6 +256,8 @@ class NetworkManagerImpl {
         // Reconcile with linked devices: edits made while either side was
         // offline are otherwise lost (the relay has no store-and-forward).
         this.sendSyncReqs();
+        this.sendFrontsToFriends();
+        this.registerWithGateway().catch(() => {});
       }
     });
     client.on('packet_received', (p: PacketReceived) => this.handlePacket(p));
@@ -255,6 +274,8 @@ class NetworkManagerImpl {
           f => f.peerId === e.peer_id && f.kind === 'device' && f.status === 'accepted' && !f.initPending,
         );
         if (linked) this.sendSyncReqTo(linked.peerId).catch(() => {});
+        const buddy = this.friends.find(f => f.peerId === e.peer_id && f.kind !== 'device' && f.status === 'accepted');
+        if (buddy && this.myFrontKnown) this.sendMyFrontTo(buddy.peerId);
         this.notify();
       }
     });
@@ -572,10 +593,93 @@ class NetworkManagerImpl {
     await this.sendTo(peerId, { t: 'dm', body, ts: Date.now() });
   }
 
+  async setFriendShowInNotification(peerId: string, show: boolean): Promise<void> {
+    const f = this.friends.find(x => x.peerId === peerId);
+    if (!f) return;
+    if (show) {
+      const pinned = this.friends.filter(x => x.showInNotification && x.peerId !== peerId).length;
+      if (pinned >= MAX_NOTIF_FRIENDS) return;
+    }
+    this.upsertFriend({ ...f, showInNotification: show });
+    await this.persistFriends();
+    this.notify();
+    this.registerWithGateway().catch(() => {});
+  }
+
+  private gatewayFetch(path: string, body: Record<string, unknown>): Promise<unknown> {
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('gateway timeout')), 10000),
+    );
+    return Promise.race([
+      fetch(`${DEFAULT_GATEWAY_URL}${path}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      }),
+      timeout,
+    ]);
+  }
+
+  private async announceFrontToGateway(): Promise<void> {
+    const self = this.identity;
+    if (!self || !this.settings.enabled) return;
+    const fronters = this.myFront?.fronters || '';
+    const startTime = this.myFront?.startTime || 0;
+    const ts = Date.now();
+    const signed = `psgw-front|${self.peerId}|${ts}|${fronters}|${startTime}`;
+    const sig = nacl.sign.detached(decodeUTF8(signed), self.edSecretKey);
+    try {
+      await this.gatewayFetch('/gw/front', {
+        peer_id: self.peerId,
+        ed_pub: encodeBase64(self.edPublicKey),
+        sig: encodeBase64(sig),
+        ts,
+        fronters,
+        start_time: startTime,
+      });
+    } catch {}
+  }
+
+  private gatewayEverRegistered = false;
+
+  private async registerWithGateway(): Promise<void> {
+    if (Platform.OS !== 'ios') return;
+    const self = this.identity;
+    if (!self || !this.settings.enabled) return;
+    const watch = this.friends
+      .filter(f => f.kind !== 'device' && f.status === 'accepted' && f.showInNotification)
+      .map(f => f.peerId)
+      .sort();
+    if (watch.length === 0) {
+      if (!this.gatewayEverRegistered) return;
+      endFriendsActivity().catch(() => {});
+      this.gatewayEverRegistered = false;
+    }
+    const token = watch.length > 0 ? (await getFriendsPushToken()) || '' : '';
+    if (watch.length > 0 && token) this.gatewayEverRegistered = true;
+    const env = __DEV__ ? 'sandbox' : 'prod';
+    const ts = Date.now();
+    const signed = `psgw-register|${self.peerId}|${ts}|${env}|${token}|${watch.join(',')}`;
+    const sig = nacl.sign.detached(decodeUTF8(signed), self.edSecretKey);
+    try {
+      await this.gatewayFetch('/gw/register', {
+        peer_id: self.peerId,
+        ed_pub: encodeBase64(self.edPublicKey),
+        sig: encodeBase64(sig),
+        ts,
+        env,
+        activity_token: token,
+        watch,
+      });
+    } catch {}
+  }
+
   // Called by the app whenever the local front (or members) change. Caches the
   // resolved status and broadcasts it to all accepted friends (best-effort).
   async updateMyFront(front: any, members: Member[]): Promise<void> {
     this.myFront = buildFrontShare(front, members);
+    this.myFrontKnown = true;
+    this.announceFrontToGateway().catch(() => {});
     for (const f of this.friends) {
       if (f.status !== 'accepted' || f.kind === 'device') continue;
       try {
@@ -588,6 +692,14 @@ class NetworkManagerImpl {
     try {
       await this.sendTo(peerId, { t: 'front', status: this.myFront });
     } catch {}
+  }
+
+  private sendFrontsToFriends(): void {
+    if (!this.myFrontKnown) return;
+    for (const f of this.friends) {
+      if (f.kind === 'device' || f.status !== 'accepted') continue;
+      this.sendMyFrontTo(f.peerId);
+    }
   }
 
   // ---- live data sync (between your own linked devices) ----
@@ -757,7 +869,7 @@ class NetworkManagerImpl {
       list[idx][kind === 'av' ? 'avatar' : 'banner'] = uri;
       const v = JSON.stringify(list);
       await AsyncStorage.setItem(KEYS.members, v);
-      this.lastHashes[KEYS.members] = contentHash(v);
+      this.lastHashes[KEYS.members] = syncHash(v);
     } catch {}
   }
 
@@ -788,12 +900,16 @@ class NetworkManagerImpl {
   // target-side pending clone older than 10 minutes (or with no timestamp, i.e.
   // wedged by an older build) reverts to normal bidirectional sync; the
   // reconciliation pass converges whatever the clone didn't finish.
+  // initStartedAt doubles as the clone activity watermark (refreshed on every
+  // incoming init message), so this is an INACTIVITY timeout: a legitimately
+  // long clone on a slow link stays pending while data flows; a dead one
+  // (lost initDone) clears after 5 quiet minutes.
   private expireStaleClones(): void {
-    const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+    const CLONE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
     let changed = false;
     this.friends = this.friends.map(f => {
       if (f.kind === 'device' && f.initRole === 'target' && f.initPending) {
-        if (!f.initStartedAt || Date.now() - f.initStartedAt > CLONE_TIMEOUT_MS) {
+        if (!f.initStartedAt || Date.now() - f.initStartedAt > CLONE_IDLE_TIMEOUT_MS) {
           changed = true;
           return { ...f, initPending: false };
         }
@@ -813,7 +929,7 @@ class NetworkManagerImpl {
   private async sendSyncReqTo(peerId: string): Promise<void> {
     const snap = await this.snapshot();
     const hashes: Record<string, string> = {};
-    for (const k in snap) hashes[k] = contentHash(snap[k]);
+    for (const k in snap) hashes[k] = syncHash(snap[k]);
     await this.sendTo(peerId, {t: 'sync_req', hashes});
   }
 
@@ -837,7 +953,7 @@ class NetworkManagerImpl {
     const snap = await this.snapshot();
     const diff: {k: string; v: string; h: string}[] = [];
     for (const k in snap) {
-      const h = contentHash(snap[k]);
+      const h = syncHash(snap[k]);
       if (theirs[k] !== h) diff.push({k, v: snap[k], h});
     }
     if (diff.length === 0) return;
@@ -846,7 +962,12 @@ class NetworkManagerImpl {
       const sendOne = async (msg: NetMessage) => {
         try {
           await this.sendTo(sender.peerId, msg);
-        } catch {}
+        } catch {
+          await sleep(SYNC_PACE_MS);
+          try {
+            await this.sendTo(sender.peerId, msg);
+          } catch {}
+        }
         await sleep(SYNC_PACE_MS);
       };
       let batch: Record<string, {v: string; h: string}> = {};
@@ -879,7 +1000,10 @@ class NetworkManagerImpl {
   }
 
   private async doSyncPush(): Promise<void> {
-    if (this.syncing) return; // never overlap push cycles
+    if (this.syncing) {
+      this.notifyDataChanged(); // busy (clone/reconciliation in flight) — retry, never drop
+      return;
+    }
     const devices = this.acceptedDevices();
     if (devices.length === 0) return;
     const now = Date.now();
@@ -891,7 +1015,7 @@ class NetworkManagerImpl {
     const snap = await this.snapshot();
     const changed: {k: string; v: string; h: string}[] = [];
     for (const k in snap) {
-      const h = contentHash(snap[k]);
+      const h = syncHash(snap[k]);
       if (this.lastHashes[k] !== h) changed.push({k, v: snap[k], h});
     }
     if (changed.length === 0) return;
@@ -958,7 +1082,12 @@ class NetworkManagerImpl {
       const sendOne = async (msg: NetMessage) => {
         try {
           await this.sendTo(peerId, msg);
-        } catch {}
+        } catch {
+          await sleep(SYNC_PACE_MS);
+          try {
+            await this.sendTo(peerId, msg);
+          } catch {}
+        }
         await sleep(SYNC_PACE_MS);
       };
 
@@ -974,7 +1103,7 @@ class NetworkManagerImpl {
 
       for (const k in snap) {
         const v = snap[k];
-        const h = contentHash(v);
+        const h = syncHash(v);
         if (v.length > SYNC_MSG_BUDGET) {
           await flush();
           const total = Math.ceil(v.length / SYNC_CHUNK_SIZE);
@@ -1030,6 +1159,9 @@ class NetworkManagerImpl {
       this.notify();
     }
     const cloning = init && dev.initRole === 'target';
+    if (cloning && dev.initPending) {
+      this.upsertFriend({ ...dev, initStartedAt: Date.now() });
+    }
     if (!init && dev.initRole === 'target' && dev.initPending) {
       dev = { ...dev, initPending: false };
       this.upsertFriend(dev);
@@ -1050,7 +1182,7 @@ class NetworkManagerImpl {
         continue;
       }
       const localRaw = await AsyncStorage.getItem(k);
-      const localHash = localRaw != null ? contentHash(localRaw) : '__absent__';
+      const localHash = localRaw != null ? syncHash(localRaw) : '__absent__';
       const base = this.lastHashes[k];
       if (localHash === incoming.h) {
         this.lastHashes[k] = incoming.h;
@@ -1060,7 +1192,7 @@ class NetworkManagerImpl {
         if (k === KEYS.members) {
           const v = this.preserveLocalMedia(incoming.v, localRaw);
           await AsyncStorage.setItem(k, v);
-          this.lastHashes[k] = contentHash(v);
+          this.lastHashes[k] = syncHash(v);
         } else {
           await AsyncStorage.setItem(k, incoming.v);
           this.lastHashes[k] = incoming.h;
@@ -1109,7 +1241,7 @@ class NetworkManagerImpl {
           const localRaw = await AsyncStorage.getItem(c.key);
           const v = this.preserveLocalMedia(c.remoteValue, localRaw);
           await AsyncStorage.setItem(c.key, v);
-          this.lastHashes[c.key] = contentHash(v);
+          this.lastHashes[c.key] = syncHash(v);
         } else {
           await AsyncStorage.setItem(c.key, c.remoteValue);
           this.lastHashes[c.key] = c.remoteHash;
@@ -1121,7 +1253,7 @@ class NetworkManagerImpl {
       for (const c of conflicts) {
         const localRaw = await AsyncStorage.getItem(c.key);
         if (localRaw != null) {
-          const h = contentHash(localRaw);
+          const h = syncHash(localRaw);
           this.lastHashes[c.key] = h;
           push[c.key] = {v: localRaw, h};
         }

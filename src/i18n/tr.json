@@ -807,6 +807,7 @@
     "statusIncoming": "Bağlanmak istiyor",
     "online": "Çevrimiçi",
     "offline": "Çevrimdışı",
+    "showInNotif": "Bildirimde göster",
     "accept": "Kabul et",
     "remove": "Kaldır",
     "ownCode": "Bu senin kendi arkadaş kodun.",

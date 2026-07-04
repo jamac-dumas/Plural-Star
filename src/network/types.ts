@@ -36,6 +36,8 @@ export interface Friend {
   // when the friend is offline.
   lastStatus?: FrontShare | null;
   statusUpdatedAt?: number;
+  // Pin this friend's front into the persistent notification / Live Activity.
+  showInNotification?: boolean;
 }
 
 // A friend's shared front/status, mirroring the on-device notification content.
@@ -99,6 +101,9 @@ export const SYNC_EXCLUDE_KEYS = [
 export const SYNC_STATE_KEY = 'ps:networkSyncState';
 
 export const RENDEZVOUS_TTL_SECONDS = 30 * 60; // codes live 30 minutes
+
+// Max friends pinnable into the persistent notification (takeover guard).
+export const MAX_NOTIF_FRIENDS = 5;
 
 // Connection status surfaced to the UI.
 export type ConnStatus =

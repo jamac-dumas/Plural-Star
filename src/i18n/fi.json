@@ -807,6 +807,7 @@
     "statusIncoming": "Haluaa yhdistää",
     "online": "Yhteydessä",
     "offline": "Ei yhteydessä",
+    "showInNotif": "Näytä ilmoituksessa",
     "accept": "Hyväksy",
     "remove": "Poista",
     "ownCode": "Tuo on oma ystäväkoodisi.",
@@ -848,6 +849,23 @@
     "syncCloneReceiving": "Vastaanotetaan ensimmäistä kopiota…",
     "syncCloneDone": "Ensimmäinen kopio valmis",
     "publishFailed": "Koodin julkaisu epäonnistui — tarkista yhteytesi ja yritä uudelleen."
+  },
+  "mailbox": {
+    "title": "Postilaatikko",
+    "compose": "Kirjoita",
+    "from": "Lähettäjä",
+    "to": "Vastaanottaja",
+    "send": "Lähetä",
+    "messagePlaceholder": "Kirjoita viesti…",
+    "empty": "Ei vielä postia. Napauta Kirjoita lähettääksesi viestin jäsenten välillä.",
+    "emptyInbox": "Tässä postilaatikossa ei ole vielä viestejä.",
+    "inboxOf": "{{name}}: postilaatikko",
+    "replyFrom": "Lähetä jäsenelle {{name}} lähettäjänä:",
+    "messageCount": "{{count}} viesti",
+    "messageCount_other": "{{count}} viestiä",
+    "unreadCount": "{{count}} lukematta",
+    "deleteTitle": "Poista viesti",
+    "deleteMsg": "Poistetaanko tämä viesti? Tätä ei voi kumota."
   },
   "systemMap": {
     "connections": "Yhteydet",

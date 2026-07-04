@@ -807,6 +807,7 @@
     "statusIncoming": "想要连接",
     "online": "在线",
     "offline": "离线",
+    "showInNotif": "在通知中显示",
     "accept": "接受",
     "remove": "移除",
     "ownCode": "这是你自己的好友码。",
