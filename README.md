@@ -14,7 +14,7 @@
     <img src="https://img.shields.io/badge/Google%20Play-Get%20the%20App-DAA520?style=for-the-badge&logo=googleplay&logoColor=white" alt="Get it on Google Play" />
   </a>
   &nbsp;
-  <a href="https://github.com/TheHanyou/Plural-Star/releases/latest/download/app-release.apk">
+  <a href="https://github.com/ByHanyou/Plural-Star/releases/latest/download/app-release.apk">
     <img src="https://img.shields.io/badge/GitHub-Download%20APK-DAA520?style=for-the-badge&logo=android&logoColor=white" alt="Download APK from GitHub" />
   </a>
   &nbsp;
@@ -34,7 +34,7 @@
 </p>
 
 <p align="center">
-  <a href="https://thehanyou.github.io/Plural-Star/">Privacy Policy</a>
+  <a href="https://byhanyou.github.io/Plural-Star/">Privacy Policy</a>
 </p>
 
 ---
@@ -130,7 +130,7 @@ The only outbound requests are:
 - **GPS location** (optional, off by default) — coordinates are sent to [OpenStreetMap Nominatim](https://nominatim.openstreetmap.org) to resolve a neighbourhood or city name. Raw coordinates are never stored.
 - **Simply Plural / PluralKit import** (optional) — your token is used for a single one-time request and never stored.
 
-Full privacy policy: [https://thehanyou.github.io/Plural-Star/](https://thehanyou.github.io/Plural-Star/)
+Full privacy policy: [https://thehanyou.github.io/Plural-Star/](https://byhanyou.github.io/Plural-Star/)
 
 ---
 
